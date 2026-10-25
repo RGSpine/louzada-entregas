@@ -20,6 +20,9 @@ import {
 import { resolveSessionEmail } from "@/lib/plan-limits";
 import { needsBasicoCheckout } from "@/lib/basico-plan";
 
+/** Painel autenticado: não pré-renderizar no build da Vercel. */
+export const dynamic = "force-dynamic";
+
 export default async function DashboardLayout({
   children,
 }: {
