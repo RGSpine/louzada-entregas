@@ -1,0 +1,2550 @@
+generator client {
+  provider   = "prisma-client-js"
+  engineType = "library"
+}
+
+datasource db {
+  provider          = "postgresql"
+  url               = env("DATABASE_URL") // Pooler (porta 6543) - usado pelo Prisma Client
+  directUrl         = env("DIRECT_URL") // Direct (porta 5432) - usado por migrations/introspect
+  // Opcional: Postgres dedicado ao shadow (ex.: `aievolui_shadow` no docker-compose.dev-db.yml).
+  // Sem esta URL o Prisma cria o shadow no mesmo servidor — falha em alguns hosts sem schema `auth`.
+  shadowDatabaseUrl = env("SHADOW_DATABASE_URL")
+}
+
+// Enum para sistema de cargos (Roles)
+enum Role {
+  USER
+  ADMIN
+}
+
+/**
+ * Nível de permissão do Intra User (sub-usuário de conta de equipe).
+ * ADMIN: acesso total (financeiro global, relatórios, gestão de equipe).
+ * MEMBER: acesso restrito (só seus pacientes/compartilhados; financeiro limitado).
+ */
+enum IntraUserRole {
+  ADMIN
+  MEMBER
+}
+
+/**
+ * Origem do ficheiro na pasta Exames/Documentos do paciente
+ */
+enum PatientExamSource {
+  MANUAL_UPLOAD
+  AI_GENERATED
+}
+
+/**
+ * Origem da evolução clínica (nativa vs importada de outra plataforma).
+ */
+enum EvolutionSource {
+  NATIVE
+  IMPORTED
+}
+
+/**
+ * Estado da marcação na agenda própria do profissional
+ */
+enum AppointmentStatus {
+  SCHEDULED
+  COMPLETED
+  CANCELLED
+  NO_SHOW
+}
+
+/**
+ * Origem do agendamento (voz e sync Google nas fases seguintes)
+ */
+enum AppointmentSource {
+  MANUAL
+  VOICE
+  OCR
+  GOOGLE_SYNC
+}
+
+/**
+ * Tipo de atendimento na agenda (multi-profissão).
+ */
+enum AppointmentVisitKind {
+  UNIQUE_CONSULTATION
+  RETURN
+  TREATMENT_PLAN
+}
+
+/**
+ * Onde o atendimento ocorre.
+ */
+enum AppointmentCareSetting {
+  IN_PERSON_CLINIC
+  ONLINE
+  HOME_VISIT
+}
+
+/**
+ * Estado de confirmação do paciente/evento na agenda (cores Starter+).
+ */
+enum AppointmentConfirmationStatus {
+  PENDING_CONFIRMATION
+  CONFIRMED
+}
+
+/**
+ * Estado do processamento híbrido da Nova Evolução.
+ */
+enum EvolutionProcessingJobStatus {
+  QUEUED
+  PROCESSING
+  SUCCEEDED
+  FAILED
+}
+
+/**
+ * Compra pontual ou pacote de sessões ligada ao catálogo do profissional.
+ */
+enum PatientServicePurchaseType {
+  SINGLE
+  PACKAGE
+}
+
+/**
+ * Forma de cobrança do serviço/venda.
+ * SESSION = avulso ou pacote de N sessões; MONTHLY = mensalidade (pilates, acompanhamento…).
+ */
+enum ServiceBillingMode {
+  SESSION
+  MONTHLY
+}
+
+enum PatientServiceSessionStatus {
+  PENDING
+  CONSUMED
+  WAIVED
+  CANCELLED
+}
+
+enum FinancialTransactionKind {
+  INCOME
+  EXPENSE
+}
+
+enum FinancialTransactionMethod {
+  CASH
+  PIX
+  CARD
+  TRANSFER
+  OTHER
+}
+
+/**
+ * Origem do consumo automático/manual de sessão no pacote.
+ */
+enum SessionConsumptionSource {
+  APPOINTMENT_COMPLETED
+  EVOLUTION_RECORDED
+  MANUAL
+}
+
+/**
+ * Natureza da despesa: fixa (recorrente, salva) ou variável (flutuante).
+ * Só se aplica a transações EXPENSE; receitas ficam null.
+ */
+enum ExpenseNature {
+  FIXED
+  VARIABLE
+}
+
+/**
+ * Proveniência de um lançamento financeiro (auditoria do Agente Financeiro).
+ */
+enum FinancialEntrySource {
+  MANUAL
+  AUDIO
+  PHOTO
+  AGENT
+  RECURRING
+  AGENDA
+  /** Despesa de repasse/comissão a Intra User (Consultório/Clínica). */
+  COLLABORATOR_PAYOUT
+}
+
+/**
+ * Período de apuração do balanço/repasse dos colaboradores.
+ * Isolado dos presets do relatório geral (não inclui dia/trimestre/etc.).
+ */
+enum CollaboratorPayoutPeriod {
+  WEEK
+  FORTNIGHT
+  MONTH
+}
+
+/**
+ * Frequência de uma despesa fixa recorrente.
+ */
+enum RecurringExpenseFrequency {
+  WEEKLY
+  MONTHLY
+  YEARLY
+}
+
+/**
+ * Regime tributário do profissional (export fiscal Fase 0).
+ */
+enum FiscalRegime {
+  PF_CARNE_LEAO
+  PJ_SIMPLES
+  PJ_PRESUMIDO
+  UNSPECIFIED
+}
+
+/**
+ * Estado de preparação/exportação fiscal de uma receita (Fase 0).
+ */
+enum FiscalExportStatus {
+  NOT_APPLICABLE
+  PENDING
+  READY
+  EXPORTED
+}
+
+/**
+ * Estado de emissão NFS-e (Fase 1 — provedor externo).
+ */
+enum FiscalDocumentStatus {
+  QUEUED
+  PROCESSING
+  ISSUED
+  ERROR
+  CANCELLED
+}
+
+enum FiscalProviderKind {
+  NOTAAS
+  FOCUS
+}
+
+/**
+ * Estado do emitente PJ no provedor (Fase 1.1 — multi-CNPJ).
+ */
+enum FiscalIssuerStatus {
+  PENDING_SETUP
+  PROJECT_REGISTERED
+  CERTIFICATE_ACTIVE
+  ERROR
+}
+
+enum FiscalCertificateStatus {
+  NONE
+  ACTIVE
+  EXPIRED
+  ERROR
+}
+
+/**
+ * Estado do horário no marketplace (Yield Management).
+ * AVAILABLE: ofertado; BOOKED: reservado (lock de concorrência);
+ * BLOCKED: bloqueado pelo profissional (fora do marketplace).
+ */
+enum ScheduleSlotStatus {
+  AVAILABLE
+  BOOKED
+  BLOCKED
+}
+
+model User {
+  id            String    @id @default(cuid())
+  authUserId    String?   @unique @map("auth_user_id") // UUID do Supabase Auth; usado por RLS/PostgREST quando habilitado
+  name          String?
+  email         String?   @unique
+  emailVerified DateTime?
+  image         String?
+  role          Role      @default(USER) // Sistema de cargos: USER ou ADMIN
+  isBlocked     Boolean   @default(false) // Controle de acesso: usuário bloqueado não pode acessar
+  /**
+   * Acesso PRO via parceria (marketing); sem Stripe; definido só pelo ADMIN
+   */
+  isInfluencer  Boolean   @default(false) @map("is_influencer")
+
+  // --- Campos de Perfil (Todos Opcionais no Banco para suportar Google Auth) ---
+  avatarUrl     String? // (Opcional, caso queira uma foto diferente do Google)
+  phone         String?
+  profession    String?
+  councilType   String?
+  councilNumber String? // <--- Opcional (Regra do Estudante)
+  officeAddress String?
+  clinicLogoUrl String?
+
+  /**
+   * Perfil fiscal (Fase 0 — export Receita Saúde / preparação NFS-e).
+   */
+  fiscalRegime            FiscalRegime @default(UNSPECIFIED) @map("fiscal_regime")
+  professionalCpf         String?      @map("professional_cpf") @db.VarChar(11)
+  professionalCnpj        String?      @map("professional_cnpj") @db.VarChar(14)
+  carneLeaoOccupationCode String?      @map("carne_leao_occupation_code") @db.VarChar(3)
+  /**
+   * NFS-e (PJ): código de serviço municipal / LC 116 (ex.: 04.01). Validado pelo contador.
+   */
+  nfseServiceCode         String?      @map("nfse_service_code") @db.VarChar(20)
+  /**
+   * NFS-e (PJ): alíquota ISS em percentual (ex.: 2.0 = 2%).
+   */
+  nfseIssAliquotaPercent  Float?       @map("nfse_iss_aliquota_percent")
+
+  // --- Campos de Billing (Stripe) ---
+  stripeCustomerId      String?   @unique @map("stripe_customer_id")
+  stripeSubscriptionId  String?   @unique @map("stripe_subscription_id")
+  stripePriceId         String?   @map("stripe_price_id")
+  currentPeriodEnd      DateTime? @map("current_period_end")
+  /**
+   * Stripe `cancel_at_period_end` — cancelamento agendado (ainda ativo até currentPeriodEnd).
+   * Alimenta alerta CRM CANCEL_SCHEDULED para follow-up do dono da plataforma.
+   */
+  stripeCancelAtPeriodEnd Boolean @default(false) @map("stripe_cancel_at_period_end")
+  /**
+   * Plano comercial. "NONE" = pré-checkout (nunca BASICO automático).
+   * Valores: NONE | BASICO | PROFISSIONAL | PREMIUM | CONSULTORIO | CLINICA
+   * Legado: PENDING/INCOMPLETE tratados como incompletos no código.
+   */
+  plan                  String    @default("NONE")
+  /**
+   * Ciclo de vida da conta. Novos usuários = INCOMPLETE.
+   * ACTIVE só após checkout.session.completed (webhook Stripe) ou isenção (influencer/admin).
+   * Valores: INCOMPLETE | ACTIVE | BLOCKED
+   */
+  accountStatus         String    @default("INCOMPLETE") @map("account_status")
+  planInterval          String?   @map("plan_interval") // "MONTHLY" ou "ANNUAL"
+  /**
+   * Novos cadastros: exige escolha de plano + checkout Stripe antes de liberar o produto.
+   * Default true — qualquer create que esquecer o flag permanece bloqueado.
+   */
+  basicoCheckoutRequired Boolean  @default(true) @map("basico_checkout_required")
+  /** Preenchido quando o cadastro inicial dos operadores da conta foi concluído. */
+  teamSetupCompletedAt DateTime? @map("team_setup_completed_at") @db.Timestamptz(6)
+  /** E-mail de aviso de fim do gratuito legado enviado. */
+  legacyFreeSunsetNoticeSentAt DateTime? @map("legacy_free_sunset_notice_sent_at")
+  /** Fim do período de graça de 7 dias (base legada sem assinatura). */
+  legacyFreeSunsetEndsAt     DateTime? @map("legacy_free_sunset_ends_at")
+  // Controle de cupom: cada usuário pode resgatar no máximo 1 cupom no ciclo de vida.
+  couponRedemptionCode  String?   @map("coupon_redemption_code")
+  couponRedeemedAt      DateTime? @map("coupon_redeemed_at")
+  evolutionCount        Int       @default(0) // Contador mensal (resetar por ciclo)
+  evolutionCountResetAt DateTime? @map("evolution_count_reset_at") // Data do último reset mensal
+  /**
+   * Contador mensal de importações de histórico de outra plataforma (não conta como evolução nova).
+   */
+  historyImportCount        Int       @default(0) @map("history_import_count")
+  historyImportCountResetAt DateTime? @map("history_import_count_reset_at")
+  patientCount          Int       @default(0) // Contador absoluto
+
+  /**
+   * Última sync automática Google Agenda ↔ AI.Evolui (cron).
+   */
+  googleCalendarLastSyncedAt DateTime? @map("google_calendar_last_synced_at") @db.Timestamptz(6)
+  /**
+   * Período de testes: e-mail Google informado pelo profissional para cadastro manual pelo admin.
+   */
+  googleCalendarManualEmail       String?   @map("google_calendar_manual_email")
+  googleCalendarManualRequestedAt DateTime? @map("google_calendar_manual_requested_at") @db.Timestamptz(6)
+  /**
+   * Quando o admin conclui o cadastro manual e libera OAuth para o profissional.
+   */
+  googleCalendarManualApprovedAt  DateTime? @map("google_calendar_manual_approved_at") @db.Timestamptz(6)
+
+  /**
+   * Preferências de entrega do PDF após gerar evolução.
+   * Salvamento no paciente (histórico/pasta) é sempre obrigatório.
+   */
+  autoDownloadNewEvolution Boolean @default(true) @map("auto_download_new_evolution")
+  emailNewEvolution        Boolean @default(true) @map("email_new_evolution")
+
+  createdAt                   DateTime                     @default(now())
+  updatedAt                   DateTime                     @updatedAt
+  patients                    Patient[]
+  goals                       UserGoal[]
+  /**
+   * Rótulos curtos memorizados por CID-10 para o Perfil Clínico (1–2 palavras por código).
+   */
+  cidProfileLabels            UserCidProfileLabel[]
+  /**
+   * Modelos de documento enviados pelo utilizador (referência para geração com IA)
+   */
+  documentTemplates           UserDocumentTemplate[]
+  appointments                Appointment[]
+  evolutionProcessingJobs     EvolutionProcessingJob[]
+  /**
+   * Jobs IA para extração financeira (áudio longo → segundo plano).
+   */
+  officeFinanceExtractionJobs OfficeFinanceExtractionJob[]
+  /**
+   * Jobs do Agente Financeiro (áudio longo → segundo plano).
+   */
+  financeAgentJobs            FinanceAgentJob[]
+  /**
+   * Catálogo de serviços e preços (consultório).
+   */
+  professionalServices        ProfessionalService[]
+  /**
+   * Espaços de Serviços (Consultório/Clínica): salas/unidades com caixa e agenda próprios.
+   */
+  serviceSpaces               ServiceSpace[]
+  /**
+   * Pacotes/avulsos vendidos aos pacientes.
+   */
+  patientServicePurchases     PatientServicePurchase[]
+  /**
+   * Livro-caixa do consultório.
+   */
+  financialTransactions       FinancialTransaction[]
+  /**
+   * Repasses de comissão a Intra Users (Consultório/Clínica).
+   */
+  collaboratorPayouts         CollaboratorPayout[]
+  /**
+   * Despesas fixas recorrentes do consultório.
+   */
+  recurringExpenses           RecurringExpense[]
+  /**
+   * Sessões do chat clínico por paciente (PRO).
+   */
+  patientChatSessions         PatientChatSession[]
+  accessSessions              UserAccessSession[]
+  pushSubscriptions           PushSubscription[]
+  pushNotificationDeliveries  PushNotificationDelivery[]
+  /**
+   * IDs do inbox do sino já marcados como lidos (JSON string[]).
+   * Novos itens (id diferente) voltam a aparecer no badge.
+   */
+  dashboardInboxReadIds       Json?                        @map("dashboard_inbox_read_ids")
+  clinicalRecommendationsCache ClinicalRecommendationsCache?
+  fiscalDocuments             FiscalDocument[]
+  fiscalIssuerProfile         FiscalIssuerProfile?
+
+  /** CRM comercial (Camada B — pós-signup). */
+  crmProfile                  CrmAccountProfile?
+  crmReferralsMade            CrmAccountProfile[]      @relation("CrmReferrals")
+  crmAdminNotesAuthored       CrmAdminNote[]           @relation("CrmAdminNotes")
+
+  accounts Account[]
+  sessions Session[]
+
+  /**
+   * Sub-usuários (profissionais) da conta de equipe (Consultório/Clínica).
+   * O Tenant é este User; os Intra Users compartilham a mesma credencial.
+   */
+  intraUsers IntraUser[]
+
+  /**
+   * Perfil público B2B do profissional no marketplace (geo + yield).
+   */
+  professionalProfile ProfessionalProfile?
+
+  dentistClients   DentistClient[]
+  logisticsIntakes LogisticsIntake[]
+  logisticsTasks   LogisticsTask[]
+}
+
+/**
+ * Sub-usuário (Intra User) atrelado à conta pagante (Tenant = User).
+ *
+ * A autenticação continua via credencial única do Tenant. Os Intra Users são
+ * perfis internos usados para segregação de dados por profissional e RBAC
+ * (ADMIN vs MEMBER) dentro dos planos Consultório/Clínica. Quantidade máxima:
+ * `maxIntraUsersForPlan` (Consultório=5, Clínica=10) — constante de app, não coluna.
+ * O perfil ativo é resolvido por cookie após o login (seletor de perfil).
+ */
+model IntraUser {
+  id        String        @id @default(cuid())
+  userId    String        @map("user_id") // Tenant/conta pagante (User Prisma)
+  name      String
+  /**
+   * Cor HEX (#RRGGBB) usada para colorir os atendimentos deste profissional na agenda.
+   */
+  color     String        @default("#2563EB") @map("color") @db.VarChar(7)
+  role      IntraUserRole @default(MEMBER)
+  /**
+   * MEMBER: se false, não cadastra/baixa sessões nem planos na ficha do paciente
+   * (aba Serviços / Fiscal). ADMIN ignora este flag (sempre pode).
+   * O titular ADMIN controla por perfil em Meu Perfil → Equipe.
+   */
+  canManagePatientServices Boolean @default(true) @map("can_manage_patient_services")
+  /** Executor das coletas e entregas. Não opera o painel como Suzana ou Ellen. */
+  isMotoboy Boolean @default(false) @map("is_motoboy")
+  /** Entregador inativo sai das novas rotas e permanece nas marcações já feitas. */
+  active Boolean @default(true) @map("is_active")
+  /** Vezes em que o nome do administrador principal mudou depois do cadastro inicial. */
+  nameRevision Int @default(0) @map("name_revision")
+  /**
+   * Comissão do Intra User em basis points (0–10000 = 0%–100%).
+   * Definida livremente pelo ADMIN do tenant; cada perfil pode ter % diferente.
+   * Só aplica a Consultório/Clínica — armazenamento por tenant (userId).
+   */
+  commissionRateBps Int @default(0) @map("commission_rate_bps")
+  /**
+   * Dono da conta (primeiro Intra User). Sempre ADMIN e não pode ser excluído.
+   */
+  isOwner   Boolean       @default(false) @map("is_owner")
+  /**
+   * Hash scrypt do PIN do perfil ADMIN (Opção B). MEMBER não usa PIN.
+   * Nunca exponha este campo ao cliente — só `hasPin` booleano.
+   */
+  pinHash     String?   @map("pin_hash")
+  pinUpdatedAt DateTime? @map("pin_updated_at")
+  /** PIN em claro, só para o administrador principal ver e alterar no próprio perfil. */
+  pinCode     String?   @map("pin_code") @db.VarChar(4)
+  /** Hash do link de troca do PIN. Só o administrador principal usa. */
+  pinResetTokenHash String?   @map("pin_reset_token_hash")
+  pinResetExpiresAt DateTime? @map("pin_reset_expires_at")
+  createdAt DateTime      @default(now()) @map("created_at")
+  updatedAt DateTime      @updatedAt @map("updated_at")
+
+  tenant        User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  ownedPatients       Patient[]     @relation("PatientOwner")
+  appointments        Appointment[] @relation("AppointmentIntraUser")
+  recordedEvolutions  Evolution[]   @relation("EvolutionAttendingIntraUser")
+  financialTransactions FinancialTransaction[]
+  collaboratorPayouts CollaboratorPayout[]
+  logisticsIntakesCreated LogisticsIntake[] @relation("LogisticsIntakeCreator")
+  logisticsTasksAsMotoboy LogisticsTask[]   @relation("LogisticsTaskMotoboy")
+
+  @@index([userId])
+  @@map("IntraUser")
+}
+
+/// Sessões ativas por dispositivo (controle de acessos simultâneos por plano).
+/// Tetos: individuais (Stripe ou influencer)=1 último login vence; Consultório=5; Clínica=10.
+model UserAccessSession {
+  id          String   @id @default(cuid())
+  userId      String   @map("user_id")
+  deviceId    String   @map("device_id")
+  platform    String   @default("web") // web | mobile | desktop
+  deviceLabel String?  @map("device_label")
+  /** IP do último claim/login neste aparelho (x-forwarded-for). */
+  ipAddress   String?  @map("ip_address")
+  lastSeenAt  DateTime @default(now()) @map("last_seen_at")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, deviceId])
+  @@index([userId, lastSeenAt])
+  @@map("user_access_session")
+}
+
+/// Cache diário de Indicações (Ester) gerado a partir do Perfil Clínico.
+model ClinicalRecommendationsCache {
+  id                 String   @id @default(cuid())
+  userId             String   @unique @map("user_id")
+  /** Snapshot serializado: items, rationale, profileTags, sessionsAnalyzed, generatedAt */
+  payload            Json
+  /** Fingerprint do Perfil Clínico no momento da geração (top tags + foco). */
+  profileFingerprint String   @map("profile_fingerprint")
+  generatedAt        DateTime @map("generated_at")
+  expiresAt          DateTime @map("expires_at")
+  createdAt          DateTime @default(now()) @map("created_at")
+  updatedAt          DateTime @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([expiresAt])
+  @@map("clinical_recommendations_cache")
+}
+
+/// Inscrição Web Push (PWA Android/iOS 16.4+) por dispositivo/navegador.
+model PushSubscription {
+  id        String   @id @default(cuid())
+  userId    String   @map("user_id")
+  endpoint  String   @unique
+  p256dh    String
+  auth      String
+  userAgent String?  @map("user_agent")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("push_subscription")
+}
+
+/// Evita reenvio da mesma notificação (action item ou lembrete de agenda).
+model PushNotificationDelivery {
+  id        String   @id @default(cuid())
+  userId    String   @map("user_id")
+  dedupeKey String   @map("dedupe_key")
+  kind      String
+  sentAt    DateTime @default(now()) @map("sent_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, dedupeKey])
+  @@index([userId, sentAt])
+  @@map("push_notification_delivery")
+}
+
+model Account {
+  id                String  @id @default(uuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String? @db.Text
+  access_token      String? @db.Text
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String? @db.Text
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+}
+
+model Session {
+  id           String   @id @default(uuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+}
+
+model Patient {
+  id                      String                   @id @default(uuid())
+  userId                  String?
+  /**
+   * Intra User (profissional) que criou/possui este paciente. Base da segregação
+   * intra-tenant: um MEMBER só vê pacientes onde ownerId == seu id OU isShared.
+   */
+  ownerId                 String?                  @map("owner_id")
+  /**
+   * Paciente compartilhado com toda a equipe da clínica (visível a todos os Intra Users do Tenant).
+   */
+  isShared                Boolean                  @default(false) @map("is_shared")
+  name                    String
+  /**
+   * Placeholder interno da agenda Google — não aparece em listas clínicas (documentos, pacientes).
+   */
+  agendaOnly              Boolean                  @default(false) @map("agenda_only")
+  age                     String?
+  diagnosis               String?
+  history                 String?                  @db.Text
+  clinicalSummary         String?                  @db.Text // Resumo clínico atualizado gerado pela IA
+  /**
+   * Tópicos sucintos do caso ({ v, bullets }) — gerados com o resumo (updatePatientSummary).
+   */
+  clinicalCaseHighlights  Json?                    @map("clinical_case_highlights")
+  metrics                 Json? // Métricas numéricas históricas (EVA, peso, amplitude, etc)
+  lastVisit               DateTime? // Data da última evolução (facilita ordenação)
+  /**
+   * Cor opcional na agenda (#RRGGBB). Null = cor automática estável por paciente.
+   */
+  agendaColor             String?                  @map("agenda_color") @db.VarChar(7)
+  /**
+   * CPF do beneficiário (11 dígitos) — opcional até export fiscal.
+   */
+  cpf                     String?                  @db.VarChar(11)
+  /**
+   * CPF de quem pagou, quando diferente do beneficiário.
+   */
+  payerCpf                String?                  @map("payer_cpf") @db.VarChar(11)
+  /**
+   * Consentimento LGPD para uso dos dados em exportação fiscal.
+   */
+  fiscalDataConsentAt     DateTime?                @map("fiscal_data_consent_at") @db.Timestamptz(6)
+  /**
+   * Identidade B2C (marketplace). Null = ficha clínica só B2B.
+   * Unique: um login Supabase Auth = um perfil de paciente no marketplace.
+   */
+  authUserId              String?                  @unique @map("auth_user_id")
+  /**
+   * Contato do perfil B2C. Não unique: fichas B2B de profissionais distintos
+   * podem repetir e-mail/telefone sem conta marketplace.
+   */
+  email                   String?
+  phone                   String?
+  fatherName              String?                  @map("father_name") @db.VarChar(200)
+  motherName              String?                  @map("mother_name") @db.VarChar(200)
+  companionName           String?                  @map("companion_name") @db.VarChar(200)
+  companionPhone          String?                  @map("companion_phone") @db.VarChar(40)
+  /**
+   * Data de nascimento (fonte da idade automática na ficha e nas evoluções).
+   */
+  dateOfBirth             DateTime?                @map("date_of_birth") @db.Date
+  createdAt               DateTime                 @default(now())
+  updatedAt               DateTime                 @updatedAt
+  user                    User?                    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  owner                   IntraUser?               @relation("PatientOwner", fields: [ownerId], references: [id], onDelete: SetNull)
+  evolutions              Evolution[]
+  visualMetrics           PatientMetric[] // Nova: métricas clínicas estruturadas para "Evolução Visual"
+  exams                   PatientExam[] // Pasta de Exames (PRO): imagens/PDFs de exames e fichas
+  appointments            Appointment[]
+  patientServicePurchases PatientServicePurchase[]
+  financialTransactions   FinancialTransaction[]
+  chatSession             PatientChatSession?
+  scheduleSlots           ScheduleSlot[]
+  /**
+   * Perfis do Mapa de Saúde B2C (titular + dependentes na mesma conta).
+   */
+  healthProfiles          HealthProfile[]
+  googleCalendarAccount   PatientGoogleCalendarAccount?
+  showcaseInquiries       ShowcaseInquiry[]
+  showcaseMessages        ShowcaseMessage[]
+  showcaseDualBookings    ShowcaseDualBooking[]
+  sharedHealthUpdates     SharedHealthUpdate[]
+  mapInvites              ProfessionalMapInvite[]
+
+  @@index([userId])
+  @@index([userId, agendaOnly])
+  @@index([ownerId])
+  @@index([userId, ownerId])
+  @@index([name])
+  @@index([lastVisit])
+  @@index([email])
+}
+
+/**
+ * Uma thread de chat clínico por profissional + paciente (PRO).
+ */
+model PatientChatSession {
+  id        String   @id @default(cuid())
+  userId    String   @map("user_id")
+  patientId String   @unique @map("patient_id")
+  title     String?
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  user     User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+  patient  Patient              @relation(fields: [patientId], references: [id], onDelete: Cascade)
+  messages PatientChatMessage[]
+
+  @@unique([userId, patientId])
+  @@index([userId, updatedAt])
+  @@map("patient_chat_session")
+}
+
+model PatientChatMessage {
+  id        String   @id @default(cuid())
+  sessionId String   @map("session_id")
+  role      String // "user" | "assistant"
+  content   String   @db.Text
+  citations Json?
+  metadata  Json?
+  createdAt DateTime @default(now()) @map("created_at")
+
+  session PatientChatSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId, createdAt])
+  @@map("patient_chat_message")
+}
+
+// Métricas clínicas estruturadas para a "Evolução Visual" do paciente
+model PatientMetric {
+  id              String   @id @default(uuid())
+  patientId       String
+  name            String // Ex: "Nível de Dor", "Mobilidade", "Força"
+  value           Float // Escala numérica (ex: 0 a 10)
+  date            DateTime // Data associada ao marco (ex: data da evolução ou do atendimento)
+  isAutoGenerated Boolean  @default(false) // true = extraído automaticamente pela IA
+  /**
+   * Unidade ou escala informada pela IA (ex: EVA, graus, kg).
+   */
+  unit            String?
+  /**
+   * Justificativa curta da extração (skill Evolução Visual).
+   */
+  reasoning       String?  @db.Text
+  /**
+   * Quando a métrica veio de análise de exame/ficheiro na Pasta de Exames.
+   */
+  patientExamId   String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  patient     Patient      @relation(fields: [patientId], references: [id], onDelete: Cascade)
+  patientExam PatientExam? @relation(fields: [patientExamId], references: [id], onDelete: SetNull)
+
+  @@index([patientId, date])
+  @@index([name])
+  @@index([patientExamId])
+}
+
+// Pasta Exames/Documentos: uploads manuais (PRO) e PDFs gerados por IA (FREE+)
+model PatientExam {
+  id           String            @id @default(uuid())
+  patientId    String
+  title        String?
+  fileUrl      String
+  fileType     String
+  aiSummary    String?           @db.Text
+  source       PatientExamSource @default(MANUAL_UPLOAD)
+  /**
+   * Tipo lógico quando source = AI_GENERATED (ex.: PEDIDO_EXAMES)
+   */
+  documentType String?           @map("document_type")
+  createdAt    DateTime          @default(now())
+  updatedAt    DateTime          @updatedAt
+
+  patient Patient         @relation(fields: [patientId], references: [id], onDelete: Cascade)
+  metrics PatientMetric[]
+
+  @@index([patientId])
+  @@index([source])
+}
+
+/**
+ * Exemplos de documentos do utilizador por tipo (texto/prompt; ficheiro no Storage)
+ */
+model UserDocumentTemplate {
+  id            String   @id @default(uuid())
+  userId        String   @map("user_id")
+  documentType  String   @map("document_type")
+  label         String?
+  fileUrl       String   @map("file_url")
+  fileType      String   @map("file_type")
+  extractedText String?  @map("extracted_text") @db.Text
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([userId, documentType])
+  @@map("UserDocumentTemplate")
+}
+
+model Evolution {
+  id                       String                    @id @default(uuid())
+  patientId                String
+  /**
+   * Marcação de origem (evoluir do slot na agenda). Opcional para evoluções avulsas.
+   */
+  appointmentId            String?                   @unique @map("appointment_id")
+  /**
+   * NATIVE = criada no AI Evolui; IMPORTED = trazida de outra plataforma (Nura, Zenfysio, etc.).
+   */
+  source                   EvolutionSource           @default(NATIVE)
+  /**
+   * Agrupa todas as evoluções de um mesmo lote de importação.
+   */
+  importBatchId            String?                   @map("import_batch_id")
+  /**
+   * Plataforma de origem declarada pelo profissional (NURA | ZENFYSIO | OUTRO).
+   */
+  importedFrom             String?                   @map("imported_from") @db.VarChar(32)
+  content                  String?                   @db.Text
+  rawData                  String?                   @db.Text
+  date                     DateTime                  @default(now())
+  pdfUrl                   String?
+  examFiles                String[]
+  tags                     String[] // Tags para filtros rapidos e nuvem de tags (ex: ["Joelho", "LCA", "Fisioterapia"])
+  clinicalMeta             Json? // Metadados clinicos estruturados por profissao (ex: { anatomia, patologia, intervencao })
+  /**
+   * Ações sugeridas para o profissional (checklist / lembretes) — formato em src/lib/evolution-artifacts.ts
+   */
+  professionalActions      Json?
+  /**
+   * Pontos-chave e recomendações para o paciente (linguagem acessível) — distinto de professionalActions
+   */
+  patientHandout           Json?
+  /**
+   * Medicamentos e suplementos mencionados (nome, dose, efeitos, interações) — formato em src/lib/evolution-artifacts.ts
+   */
+  medicationsAndSupplements Json?
+  /**
+   * Intra User que registrou a evolução (perfil ativo). Usado no painel
+   * administrativo do Consultório Financeiro (Consultório/Clínica).
+   */
+  attendingIntraUserId     String?                   @map("attending_intra_user_id")
+  createdAt                DateTime                  @default(now())
+  updatedAt                DateTime                  @updatedAt
+  patient                  Patient                   @relation(fields: [patientId], references: [id], onDelete: Cascade)
+  appointment              Appointment?              @relation(fields: [appointmentId], references: [id], onDelete: SetNull)
+  attendingIntraUser       IntraUser?                @relation("EvolutionAttendingIntraUser", fields: [attendingIntraUserId], references: [id], onDelete: SetNull)
+  sessionConsumptionEvents SessionConsumptionEvent[]
+
+  @@index([patientId])
+  @@index([appointmentId])
+  @@index([date])
+  @@index([tags])
+  @@index([importBatchId])
+  @@index([source])
+  @@index([attendingIntraUserId])
+}
+
+/**
+ * Job assíncrono para áudios longos na rota /api/evolution.
+ */
+model EvolutionProcessingJob {
+  id           String                       @id @default(cuid())
+  userId       String                       @map("user_id")
+  status       EvolutionProcessingJobStatus @default(QUEUED)
+  requestData  Json                         @map("request_data")
+  resultData   Json?                        @map("result_data")
+  errorMessage String?                      @map("error_message") @db.Text
+  startedAt    DateTime?                    @map("started_at")
+  finishedAt   DateTime?                    @map("finished_at")
+  createdAt    DateTime                     @default(now()) @map("created_at")
+  updatedAt    DateTime                     @updatedAt @map("updated_at")
+  user         User                         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, status])
+  @@index([createdAt])
+  @@map("EvolutionProcessingJob")
+}
+
+/** Histórico da suite diária de integridade — áudio evolução (cron/scheduler interno). */
+model EvolutionAudioDailyRun {
+  id         String    @id @default(cuid())
+  startedAt  DateTime  @default(now()) @map("started_at")
+  finishedAt DateTime? @map("finished_at")
+  passed     Boolean   @default(false)
+  skipped    Boolean   @default(false)
+  skipReason String?   @map("skip_reason") @db.Text
+  source     String    @default("cron")
+  results    Json      @default("[]")
+  envReport  Json?     @map("env_report")
+  createdAt  DateTime  @default(now()) @map("created_at")
+
+  @@index([startedAt(sort: Desc)])
+  @@map("EvolutionAudioDailyRun")
+}
+
+/** Histórico da suite diária — Consultório Financeiro (QA caixa + smoke staging). */
+model FinanceDailyRun {
+  id         String    @id @default(cuid())
+  startedAt  DateTime  @default(now()) @map("started_at")
+  finishedAt DateTime? @map("finished_at")
+  passed     Boolean   @default(false)
+  skipped    Boolean   @default(false)
+  skipReason String?   @map("skip_reason") @db.Text
+  source     String    @default("cron")
+  results    Json      @default("[]")
+  envReport  Json?     @map("env_report")
+  createdAt  DateTime  @default(now()) @map("created_at")
+
+  @@index([startedAt(sort: Desc)])
+  @@map("FinanceDailyRun")
+}
+
+/**
+ * Job assíncrono quando o áudio de extração financeira excede o limiar (vide `shouldUseAsyncAudioMode`).
+ */
+model OfficeFinanceExtractionJob {
+  id           String                       @id @default(cuid())
+  userId       String                       @map("user_id")
+  status       EvolutionProcessingJobStatus @default(QUEUED)
+  requestData  Json                         @map("request_data")
+  resultData   Json?                        @map("result_data")
+  errorMessage String?                      @map("error_message") @db.Text
+  startedAt    DateTime?                    @map("started_at")
+  finishedAt   DateTime?                    @map("finished_at")
+  createdAt    DateTime                     @default(now()) @map("created_at")
+  updatedAt    DateTime                     @updatedAt @map("updated_at")
+  user         User                         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, status])
+  @@index([createdAt])
+  @@map("OfficeFinanceExtractionJob")
+}
+
+/**
+ * Job assíncrono quando o áudio do Agente Financeiro excede o limiar (`shouldUseAsyncAudioMode`).
+ */
+model FinanceAgentJob {
+  id           String                       @id @default(cuid())
+  userId       String                       @map("user_id")
+  status       EvolutionProcessingJobStatus @default(QUEUED)
+  requestData  Json                         @map("request_data")
+  resultData   Json?                        @map("result_data")
+  errorMessage String?                      @map("error_message") @db.Text
+  startedAt    DateTime?                    @map("started_at")
+  finishedAt   DateTime?                    @map("finished_at")
+  createdAt    DateTime                     @default(now()) @map("created_at")
+  updatedAt    DateTime                     @updatedAt @map("updated_at")
+  user         User                         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, status])
+  @@index([createdAt])
+  @@map("FinanceAgentJob")
+}
+
+// Metas de volume (atendimentos) do usuário
+// Permite uma meta por tipo (WEEKLY e/ou MONTHLY) por usuário
+model UserGoal {
+  id        String   @id @default(cuid())
+  userId    String
+  type      String   @default("MONTHLY") // "MONTHLY" ou "WEEKLY"
+  target    Int // Número alvo de atendimentos (ex: 50)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, type]) // Uma meta por tipo por usuário
+  @@index([userId])
+}
+
+/**
+ * Mapa utilizador × código CID-10 → rótulo estável exibido no Perfil Clínico.
+ */
+model UserCidProfileLabel {
+  id        String   @id @default(cuid())
+  userId    String   @map("user_id")
+  cidCode   String   @map("cid_code")
+  label     String
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, cidCode])
+  @@index([userId])
+  @@map("UserCidProfileLabel")
+}
+
+// Contatos de ex-usuários para remarketing (admin) — não vinculados a usuário ativo
+model RemarketingContact {
+  id         String   @id @default(cuid())
+  email      String
+  name       String?
+  profession String?
+  phone      String?
+  deletedAt  DateTime @default(now())
+
+  @@index([email])
+}
+
+/**
+ * Consulta agendada na agenda do profissional (fonte de verdade interna).
+ */
+model Appointment {
+  id                      String            @id @default(cuid())
+  professionalUserId      String            @map("professional_user_id")
+  /**
+   * Intra User (profissional) que realizará o atendimento. A agenda é global por
+   * clínica; a cor do card vem do IntraUser.color deste campo.
+   */
+  intraUserId             String?           @map("intra_user_id")
+  patientId               String            @map("patient_id")
+  startAt                 DateTime          @map("start_at") @db.Timestamptz(6)
+  endAt                   DateTime          @map("end_at") @db.Timestamptz(6)
+  /**
+   * IANA no momento do agendamento (ex.: America/Sao_Paulo).
+   */
+  timezoneAtBooking       String            @default("America/Sao_Paulo") @map("timezone_at_booking")
+  status                  AppointmentStatus @default(SCHEDULED)
+  source                  AppointmentSource @default(MANUAL)
+  title                   String?
+  visitKind               AppointmentVisitKind   @default(UNIQUE_CONSULTATION) @map("visit_kind")
+  careSetting             AppointmentCareSetting @default(IN_PERSON_CLINIC) @map("care_setting")
+  /**
+   * Valor combinado para esta marcação (centavos). Não sincroniza com Google Calendar.
+   */
+  priceCents              Int?                   @map("price_cents")
+  /**
+   * Observações (endereço domiciliar, link online, orientações). Sincroniza texto sanitizado no Google.
+   */
+  notes                   String?                @db.Text
+  /**
+   * Instância de tratamento/plano (financeiro). Não sincroniza com Google Calendar.
+   */
+  patientServiceSessionId String?                @unique @map("patient_service_session_id")
+  /**
+   * Serviço do catálogo (ProfessionalService) entregue neste horário.
+   */
+  professionalServiceId   String?                @map("professional_service_id")
+  /**
+   * Espaço de Serviços (sala/unidade). Só relevante em Consultório/Clínica.
+   */
+  serviceSpaceId          String?                @map("service_space_id")
+  /**
+   * Confirmação do paciente (amarelo = falta confirmar, verde = confirmado). Starter+ na UI.
+   */
+  confirmationStatus      AppointmentConfirmationStatus @default(PENDING_CONFIRMATION) @map("confirmation_status")
+  /**
+   * Causa relatada da falta (paciente confirmou e não compareceu).
+   */
+  noShowReason            String?           @map("no_show_reason") @db.Text
+  /**
+   * Agrupa marcações geradas como série fixa (N sessões em dias da semana).
+   */
+  recurrenceSeriesId      String?           @map("recurrence_series_id")
+  /**
+   * ID do evento no Google Calendar após push opcional (Fase F).
+   */
+  googleCalendarEventId   String?           @map("google_calendar_event_id")
+  /**
+   * `updated` do evento Google (resolução de conflitos na importação).
+   */
+  googleCalendarUpdatedAt DateTime?         @map("google_calendar_updated_at") @db.Timestamptz(6)
+  /**
+   * Evento correspondente na Google Agenda da conta B2C do paciente.
+   */
+  patientGoogleCalendarEventId   String?    @map("patient_google_calendar_event_id")
+  patientGoogleCalendarUpdatedAt DateTime?  @map("patient_google_calendar_updated_at") @db.Timestamptz(6)
+  createdAt               DateTime          @default(now()) @map("created_at")
+  updatedAt               DateTime          @updatedAt @map("updated_at")
+
+  professional             User                      @relation(fields: [professionalUserId], references: [id], onDelete: Cascade)
+  intraUser                IntraUser?                @relation("AppointmentIntraUser", fields: [intraUserId], references: [id], onDelete: SetNull)
+  patient                  Patient                   @relation(fields: [patientId], references: [id], onDelete: Cascade)
+  patientServiceSession    PatientServiceSession?    @relation(fields: [patientServiceSessionId], references: [id], onDelete: SetNull)
+  professionalService      ProfessionalService?      @relation(fields: [professionalServiceId], references: [id], onDelete: SetNull)
+  serviceSpace             ServiceSpace?             @relation(fields: [serviceSpaceId], references: [id], onDelete: SetNull)
+  evolution                Evolution?
+  sessionConsumptionEvents SessionConsumptionEvent[]
+  financialTransaction     FinancialTransaction?
+  originatedPurchase       PatientServicePurchase?      @relation("PurchaseOriginAppointment")
+  marketplaceSlot          ScheduleSlot?
+  showcaseDualBooking      ShowcaseDualBooking?
+
+  @@index([professionalUserId, startAt])
+  @@index([intraUserId])
+  @@index([patientId])
+  @@index([serviceSpaceId])
+  @@index([recurrenceSeriesId])
+  @@map("Appointment")
+}
+
+/**
+ * OAuth Google Calendar do paciente B2C (mapa de saúde).
+ * Tokens só no servidor — nunca NEXT_PUBLIC_.
+ */
+model PatientGoogleCalendarAccount {
+  id                String   @id @default(cuid())
+  patientId         String   @unique @map("patient_id")
+  providerAccountId String?  @map("provider_account_id")
+  accessToken       String?  @map("access_token") @db.Text
+  refreshToken      String?  @map("refresh_token") @db.Text
+  expiresAt         Int?     @map("expires_at")
+  scope             String?  @db.Text
+  connectedAt       DateTime @default(now()) @map("connected_at") @db.Timestamptz(6)
+  updatedAt         DateTime @updatedAt @map("updated_at")
+
+  patient Patient @relation(fields: [patientId], references: [id], onDelete: Cascade)
+
+  @@map("patient_google_calendar_account")
+}
+
+/**
+ * Recurso físico da clínica (sala, maca, equipamento).
+ * É o catálogo já usado por agenda, caixa e serviços — não há tabela Resource à parte.
+ * `capacity` = quantos atendimentos simultâneos o recurso aguenta (default 1).
+ */
+enum ClinicResourceKind {
+  ROOM
+  EQUIPMENT
+}
+
+/**
+ * Espaço de Serviços (sala/unidade) — Consultório e Clínica.
+ * Catálogo, caixa e agenda podem ser filtrados por espaço; visão «Todos» agrega.
+ */
+model ServiceSpace {
+  id        String             @id @default(cuid())
+  userId    String             @map("user_id")
+  name      String
+  color     String             @default("#0F766E") @db.VarChar(7)
+  /**
+   * Atendimentos simultâneos neste recurso (sala de Pilates = 8; maca = 1).
+   */
+  capacity  Int                @default(1)
+  kind      ClinicResourceKind @default(ROOM)
+  active    Boolean            @default(true)
+  sortOrder Int                @default(0) @map("sort_order")
+  createdAt DateTime           @default(now()) @map("created_at")
+  updatedAt DateTime           @updatedAt @map("updated_at")
+
+  user                 User                     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  professionalServices ProfessionalService[]
+  appointments         Appointment[]
+  purchases            PatientServicePurchase[]
+  transactions         FinancialTransaction[]
+  recurringExpenses    RecurringExpense[]
+  scheduleSlots        ScheduleSlot[]
+
+  @@index([userId, active])
+  @@index([userId, sortOrder])
+  @@map("ServiceSpace")
+}
+
+/**
+ * Serviço cobrado no consultório (catálogo do profissional).
+ */
+model ProfessionalService {
+  id                String   @id @default(cuid())
+  userId            String   @map("user_id")
+  /**
+   * Espaço dono do serviço. Null = catálogo geral (visível em todos os espaços).
+   */
+  serviceSpaceId    String?  @map("service_space_id")
+  name              String
+  description       String?  @db.Text
+  /**
+   * Preço sugerido em centavos (BRL).
+   * Em modo MONTHLY = valor da mensalidade.
+   */
+  defaultPriceCents Int      @default(0) @map("default_price_cents")
+  /**
+   * SESSION = por sessão/pacote de N; MONTHLY = mensalidade (pilates, acompanhamento…).
+   */
+  billingMode       ServiceBillingMode @default(SESSION) @map("billing_mode")
+  active            Boolean  @default(true)
+  createdAt         DateTime @default(now()) @map("created_at")
+  updatedAt         DateTime @updatedAt @map("updated_at")
+
+  user         User                     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  serviceSpace ServiceSpace?            @relation(fields: [serviceSpaceId], references: [id], onDelete: SetNull)
+  purchases    PatientServicePurchase[]
+  appointments Appointment[]
+
+  @@index([userId])
+  @@index([userId, active])
+  @@index([serviceSpaceId])
+  @@map("ProfessionalService")
+}
+
+/**
+ * Registro comercial por paciente: consulta única ou pacote de N sessões.
+ */
+model PatientServicePurchase {
+  id                    String                     @id @default(cuid())
+  professionalUserId    String                     @map("professional_user_id")
+  patientId             String                     @map("patient_id")
+  professionalServiceId String                     @map("professional_service_id")
+  /**
+   * Espaço da venda (herdado do serviço ou escolhido na ficha).
+   */
+  serviceSpaceId        String?                    @map("service_space_id")
+  /**
+   * Chave fornecida pelo canal de origem para tornar retries da mesma venda idempotentes.
+   */
+  idempotencyKey        String?                    @map("idempotency_key")
+  /**
+   * Marcação que originou a venda pelo fluxo da Agenda. Uma venda por marcação.
+   */
+  originAppointmentId   String?                    @unique @map("origin_appointment_id")
+  type                  PatientServicePurchaseType
+  /**
+   * SESSION = pacote/avulso por sessões; MONTHLY = mensalidade do período.
+   * Herdado do catálogo na venda (pode ser override).
+   */
+  billingMode           ServiceBillingMode         @default(SESSION) @map("billing_mode")
+  /**
+   * Início inclusivo do período da mensalidade (America/Sao_Paulo). Só MONTHLY.
+   */
+  periodStart           DateTime?                  @map("period_start") @db.Timestamptz(6)
+  /**
+   * Fim exclusivo do período da mensalidade. Só MONTHLY.
+   */
+  periodEnd             DateTime?                  @map("period_end") @db.Timestamptz(6)
+  /**
+   * TOTAL de sessões (1 = consulta única; ≥2 = pacote).
+   * Em MONTHLY costuma ser 1 (representa o período, não N atendimentos).
+   */
+  sessionCountTotal     Int                        @map("session_count_total")
+  agreedPriceCents      Int                        @map("agreed_price_cents")
+  purchasedAt           DateTime                   @default(now()) @map("purchased_at") @db.Timestamptz(6)
+  notes                 String?                    @db.Text
+  createdAt             DateTime                   @default(now()) @map("created_at")
+  updatedAt             DateTime                   @updatedAt @map("updated_at")
+
+  professional User                @relation(fields: [professionalUserId], references: [id], onDelete: Cascade)
+  patient      Patient             @relation(fields: [patientId], references: [id], onDelete: Cascade)
+  service      ProfessionalService @relation(fields: [professionalServiceId], references: [id], onDelete: Restrict)
+  serviceSpace ServiceSpace?       @relation(fields: [serviceSpaceId], references: [id], onDelete: SetNull)
+  originAppointment Appointment?   @relation("PurchaseOriginAppointment", fields: [originAppointmentId], references: [id], onDelete: SetNull)
+
+  sessions     PatientServiceSession[]
+  transactions FinancialTransaction[]
+
+  @@index([professionalUserId, purchasedAt])
+  @@index([patientId])
+  @@index([serviceSpaceId])
+  @@index([professionalUserId, billingMode])
+  @@unique([professionalUserId, idempotencyKey])
+  @@map("PatientServicePurchase")
+}
+
+/**
+ * Instância de sessão dentro de uma compra (pendente até consumida).
+ */
+model PatientServiceSession {
+  id                  String                      @id @default(cuid())
+  purchaseId          String                      @map("purchase_id")
+  /**
+   * Ordem no pacote (1..sessionCountTotal).
+   * Após cada consumo, as realizadas são reordenadas por `consumedAt` (cronológico);
+   * pendentes ficam no final.
+   */
+  sequence            Int
+  status              PatientServiceSessionStatus @default(PENDING)
+  consumedAt          DateTime?                   @map("consumed_at") @db.Timestamptz(6)
+  /**
+   * Parte proporcional do preço combinado — para relatórios.
+   */
+  allocatedPriceCents Int                         @default(0) @map("allocated_price_cents")
+  createdAt           DateTime                    @default(now()) @map("created_at")
+  updatedAt           DateTime                    @updatedAt @map("updated_at")
+
+  purchase     PatientServicePurchase    @relation(fields: [purchaseId], references: [id], onDelete: Cascade)
+  consumptions SessionConsumptionEvent[]
+  transactions FinancialTransaction[]
+  appointment  Appointment?
+
+  @@unique([purchaseId, sequence])
+  @@index([purchaseId, status])
+  @@map("PatientServiceSession")
+}
+
+/**
+ * Evento de consumo (idempotente por agenda/evolução).
+ */
+model SessionConsumptionEvent {
+  id                 String                   @id @default(cuid())
+  professionalUserId String                   @map("professional_user_id")
+  patientId          String                   @map("patient_id")
+  sessionId          String                   @unique @map("session_id")
+  source             SessionConsumptionSource
+  /**
+   * Data efetiva usada pelo profissional (mesmo TZ da marcação/evolução).
+   */
+  consumedAtAnchor   DateTime                 @map("consumed_at_anchor") @db.Timestamptz(6)
+  /**
+   * Chave yyyy-LL-dd no fuso usado ao registrar — reconciliação de “mesmo dia”.
+   */
+  calendarDayLocal   String                   @map("calendar_day_local")
+  appointmentId      String?                  @unique @map("appointment_id")
+  evolutionId        String?                  @unique @map("evolution_id")
+  createdAt          DateTime                 @default(now()) @map("created_at")
+
+  session     PatientServiceSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  appointment Appointment?          @relation(fields: [appointmentId], references: [id], onDelete: SetNull)
+  evolution   Evolution?            @relation(fields: [evolutionId], references: [id], onDelete: SetNull)
+
+  @@index([professionalUserId, patientId, calendarDayLocal])
+  @@index([sessionId])
+  @@map("SessionConsumptionEvent")
+}
+
+/**
+ * Entrada ou saída no caixa do consultório (centavos BRL).
+ */
+model FinancialTransaction {
+  id                      String                     @id @default(cuid())
+  professionalUserId      String                     @map("professional_user_id")
+  kind                    FinancialTransactionKind
+  amountCents             Int                        @map("amount_cents")
+  occurredAt              DateTime                   @map("occurred_at") @db.Timestamptz(6)
+  method                  FinancialTransactionMethod
+  description             String?                    @db.Text
+  patientId               String?                    @map("patient_id")
+  purchaseId              String?                    @map("purchase_id")
+  patientServiceSessionId String?                    @unique @map("patient_service_session_id")
+  /**
+   * Marcação da agenda que gerou esta receita (consulta/retorno realizados).
+   */
+  appointmentId           String?                    @unique @map("appointment_id")
+  /**
+   * Espaço de Serviços (sala/unidade). Null = lançamento geral / planos sem espaços.
+   */
+  serviceSpaceId          String?                    @map("service_space_id")
+  /**
+   * Natureza (só EXPENSE): FIXED para despesa fixa recorrente, VARIABLE para flutuante.
+   */
+  expenseNature           ExpenseNature?             @map("expense_nature")
+  /**
+   * Categoria livre para relatórios (ex.: aluguel, materiais, impostos).
+   */
+  category                String?
+  /**
+   * Proveniência do lançamento (manual, áudio, foto, agente, recorrente).
+   */
+  source                  FinancialEntrySource       @default(MANUAL)
+  /**
+   * Quando gerado a partir de uma despesa fixa: template de origem.
+   */
+  recurringExpenseId      String?                    @map("recurring_expense_id")
+  /**
+   * Chave do período de materialização da despesa fixa (ex.: "2026-06" mensal,
+   * "2026-W23" semanal, "2026" anual). Garante idempotência com recurringExpenseId.
+   */
+  periodKey               String?                    @map("period_key")
+  fiscalExportStatus      FiscalExportStatus         @default(NOT_APPLICABLE) @map("fiscal_export_status")
+  fiscalExportedAt        DateTime?                  @map("fiscal_exported_at") @db.Timestamptz(6)
+  fiscalExportContentHash String?                    @map("fiscal_export_content_hash") @db.VarChar(64)
+  /**
+   * Estorno controlado (ADMIN). Lançamentos estornados saem do relatório/extrato
+   * e liberam o índice único parcial INCOME+purchase_id.
+   */
+  voidedAt                DateTime?                  @map("voided_at") @db.Timestamptz(6)
+  voidReason              String?                    @map("void_reason") @db.Text
+  /**
+   * Intra User vinculado (ex.: despesa de repasse/comissão).
+   * Null em receitas/despesas gerais do tenant.
+   */
+  intraUserId             String?                    @map("intra_user_id")
+
+  professional          User                    @relation(fields: [professionalUserId], references: [id], onDelete: Cascade)
+  patient               Patient?                @relation(fields: [patientId], references: [id], onDelete: SetNull)
+  purchase              PatientServicePurchase? @relation(fields: [purchaseId], references: [id], onDelete: SetNull)
+  patientServiceSession PatientServiceSession?  @relation(fields: [patientServiceSessionId], references: [id], onDelete: SetNull)
+  appointment           Appointment?            @relation(fields: [appointmentId], references: [id], onDelete: SetNull)
+  /**
+   * Coleta ou entrega que originou esta receita. A agenda guarda a ordem;
+   * o valor fica neste lançamento.
+   */
+  logisticsTaskId       String?                    @unique @map("logistics_task_id")
+  logisticsTask         LogisticsTask?             @relation(fields: [logisticsTaskId], references: [id], onDelete: SetNull)
+  serviceSpace          ServiceSpace?           @relation(fields: [serviceSpaceId], references: [id], onDelete: SetNull)
+  recurringExpense      RecurringExpense?       @relation(fields: [recurringExpenseId], references: [id], onDelete: SetNull)
+  intraUser             IntraUser?              @relation(fields: [intraUserId], references: [id], onDelete: SetNull)
+  fiscalDocument        FiscalDocument?
+  collaboratorPayout    CollaboratorPayout?
+
+  @@unique([recurringExpenseId, periodKey])
+  @@index([professionalUserId, occurredAt])
+  @@index([patientId, occurredAt])
+  @@index([professionalUserId, kind, occurredAt])
+  @@index([serviceSpaceId, occurredAt])
+  @@index([intraUserId, occurredAt])
+  // Unicidade parcial INCOME+purchaseId: migration 20260728190000 (SQL).
+  @@map("FinancialTransaction")
+}
+
+/**
+ * Repasse de comissão a um Intra User no período (semana / quinzena / mês).
+ * Cada registro = um pagamento parcial ou total; o saldo a pagar = due − sum(paid).
+ * Isolado por tenant (`professionalUserId`); cada conta tem suas próprias %.
+ */
+model CollaboratorPayout {
+  id                      String                   @id @default(cuid())
+  professionalUserId      String                   @map("professional_user_id")
+  intraUserId             String                   @map("intra_user_id")
+  period                  CollaboratorPayoutPeriod
+  /** Chave estável: rec-W:2026-W39 | rec-F:2026-09-H1 | rec-M:2026-09 */
+  periodKey               String                   @map("period_key")
+  periodStartUtc          DateTime                 @map("period_start_utc") @db.Timestamptz(6)
+  periodEndUtc            DateTime                 @map("period_end_utc") @db.Timestamptz(6)
+  /** Snapshot da % no momento do pagamento (bps). */
+  commissionRateBps       Int                      @map("commission_rate_bps")
+  /** Base atendida (soma allocatedPriceCents das sessões) no momento do pagamento. */
+  baseCents               Int                      @map("base_cents")
+  /** Comissão devida no período no momento do pagamento. */
+  commissionDueCents      Int                      @map("commission_due_cents")
+  /** Valor efetivamente pago neste lançamento. */
+  amountCents             Int                      @map("amount_cents")
+  financialTransactionId  String                   @unique @map("financial_transaction_id")
+  notes                   String?                  @db.Text
+  paidAt                  DateTime                 @default(now()) @map("paid_at") @db.Timestamptz(6)
+  voidedAt                DateTime?                @map("voided_at") @db.Timestamptz(6)
+  createdAt               DateTime                 @default(now()) @map("created_at")
+  updatedAt               DateTime                 @updatedAt @map("updated_at")
+
+  professional User                 @relation(fields: [professionalUserId], references: [id], onDelete: Cascade)
+  intraUser    IntraUser            @relation(fields: [intraUserId], references: [id], onDelete: Cascade)
+  transaction  FinancialTransaction @relation(fields: [financialTransactionId], references: [id], onDelete: Restrict)
+
+  @@index([professionalUserId, periodKey])
+  @@index([intraUserId, periodKey])
+  @@index([professionalUserId, paidAt])
+  @@map("CollaboratorPayout")
+}
+
+/**
+ * Despesa fixa recorrente do consultório (salva pelo profissional/agente).
+ * Materializada como FinancialTransaction (source=RECURRING) por período, de forma idempotente.
+ */
+model RecurringExpense {
+  id                 String                     @id @default(cuid())
+  professionalUserId String                     @map("professional_user_id")
+  name               String
+  amountCents        Int                        @map("amount_cents")
+  category           String?
+  method             FinancialTransactionMethod @default(OTHER)
+  frequency          RecurringExpenseFrequency  @default(MONTHLY)
+  /**
+   * Âncora dentro do ciclo: dia do mês (1-28) para MONTHLY/YEARLY; dia da semana (1-7) para WEEKLY.
+   */
+  anchorDay          Int                        @default(1) @map("anchor_day")
+  active             Boolean                    @default(true)
+  startedAt          DateTime                   @default(now()) @map("started_at") @db.Timestamptz(6)
+  endedAt            DateTime?                  @map("ended_at") @db.Timestamptz(6)
+  notes              String?                    @db.Text
+  /**
+   * Espaço dono do gasto fixo. Null = geral (entra em todas as visões).
+   */
+  serviceSpaceId     String?                    @map("service_space_id")
+  createdAt          DateTime                   @default(now()) @map("created_at")
+  updatedAt          DateTime                   @updatedAt @map("updated_at")
+
+  professional User                   @relation(fields: [professionalUserId], references: [id], onDelete: Cascade)
+  serviceSpace ServiceSpace?          @relation(fields: [serviceSpaceId], references: [id], onDelete: SetNull)
+  transactions FinancialTransaction[]
+
+  @@index([professionalUserId, active])
+  @@index([serviceSpaceId])
+  @@map("RecurringExpense")
+}
+
+/**
+ * NFS-e emitida via provedor externo (Fase 1). Uma nota por receita INCOME.
+ */
+model FiscalDocument {
+  id                 String               @id @default(cuid())
+  professionalUserId String               @map("professional_user_id")
+  transactionId      String               @unique @map("transaction_id")
+  provider           FiscalProviderKind   @default(NOTAAS)
+  status             FiscalDocumentStatus @default(QUEUED)
+  externalInvoiceId  String?              @map("external_invoice_id")
+  nfseNumber         String?              @map("nfse_number")
+  nfseAccessKey      String?              @map("nfse_access_key")
+  errorCode          String?              @map("error_code")
+  errorMessage       String?              @map("error_message") @db.Text
+  pdfUrl             String?              @map("pdf_url")
+  xmlUrl             String?              @map("xml_url")
+  idempotencyKey     String               @unique @map("idempotency_key")
+  webhookDeliveryIds String[]             @default([]) @map("webhook_delivery_ids")
+  issuedAt           DateTime?            @map("issued_at") @db.Timestamptz(6)
+  createdAt          DateTime             @default(now()) @map("created_at")
+  updatedAt          DateTime             @updatedAt @map("updated_at")
+
+  professional User                 @relation(fields: [professionalUserId], references: [id], onDelete: Cascade)
+  transaction  FinancialTransaction @relation(fields: [transactionId], references: [id], onDelete: Cascade)
+
+  @@index([professionalUserId, status])
+  @@index([externalInvoiceId])
+  @@map("FiscalDocument")
+}
+
+/**
+ * Emitente NFS-e por profissional PJ (projeto Notaas + API key encriptada).
+ * Certificado A1 NÃO é armazenado — apenas enviado ao Notaas via Org API.
+ */
+model FiscalIssuerProfile {
+  id                       String                  @id @default(cuid())
+  userId                   String                  @unique @map("user_id")
+  provider                 FiscalProviderKind      @default(NOTAAS)
+  status                   FiscalIssuerStatus      @default(PENDING_SETUP)
+  externalProjectId        String?                 @unique @map("external_project_id")
+  externalApiKeyId         String?                 @map("external_api_key_id")
+  encryptedProjectApiKey   String?                 @map("encrypted_project_api_key") @db.Text
+  apiKeyPrefix             String?                 @map("api_key_prefix") @db.VarChar(32)
+  razaoSocial              String?                 @map("razao_social")
+  inscricaoMunicipal       String?                 @map("inscricao_municipal") @db.VarChar(32)
+  codigoMunicipio          String?                 @map("codigo_municipio") @db.VarChar(7)
+  addressLogradouro        String?                 @map("address_logradouro")
+  addressNumero            String?                 @map("address_numero") @db.VarChar(20)
+  addressBairro            String?                 @map("address_bairro")
+  addressCidade            String?                 @map("address_cidade")
+  addressUf                String?                 @map("address_uf") @db.VarChar(2)
+  addressCep               String?                 @map("address_cep") @db.VarChar(8)
+  certificateStatus        FiscalCertificateStatus @default(NONE) @map("certificate_status")
+  certificateValidUntil    DateTime?               @map("certificate_valid_until") @db.Timestamptz(6)
+  certificateSubjectCn     String?                 @map("certificate_subject_cn")
+  certificateDaysUntilExp  Int?                    @map("certificate_days_until_exp")
+  lastError                String?                 @map("last_error") @db.Text
+  registeredAt             DateTime?               @map("registered_at") @db.Timestamptz(6)
+  certificateUploadedAt    DateTime?               @map("certificate_uploaded_at") @db.Timestamptz(6)
+  createdAt                DateTime                @default(now()) @map("created_at")
+  updatedAt                DateTime                @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([status])
+  @@map("FiscalIssuerProfile")
+}
+
+// --- CRM comercial interno (Camada B: contas pós-signup) ---
+
+enum CrmCommercialStage {
+  TRIAL_ACTIVE
+  ENGAGED
+  OPPORTUNITY
+  CUSTOMER_PAID
+  AT_RISK
+  CHURNED
+  INFLUENCER
+}
+
+enum CrmChurnRisk {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+enum CrmAhaMomentType {
+  FIRST_EVOLUTION
+  FIRST_PATIENT
+  FIRST_AGENDA
+  FIRST_FINANCE
+  FIRST_CHAT
+  FIRST_DOCUMENT
+}
+
+enum CrmAlertSeverity {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+enum CrmAlertStatus {
+  OPEN
+  ACKNOWLEDGED
+  RESOLVED
+  DISMISSED
+}
+
+enum CrmAlertChannel {
+  IN_APP
+  EMAIL
+  WHATSAPP
+}
+
+enum CrmPlanChangeReason {
+  UPGRADE_USAGE
+  DOWNGRADE_COST
+  CHURN_VOLUNTARY
+  CHURN_PAYMENT_FAILED
+  /**
+   * Usuário pediu cancelamento na Stripe; acesso segue até o fim do período pago.
+   */
+  CANCEL_SCHEDULED
+  INFLUENCER_GRANT
+  ADMIN_ADJUSTMENT
+  COUPON
+  UNKNOWN
+}
+
+enum CrmSatisfactionType {
+  NPS_D7
+  NPS_D30
+  NPS_D90
+  CSAT_SUPPORT
+  CSAT_ONBOARDING
+}
+
+enum CrmConversationChannel {
+  WHATSAPP
+  EMAIL
+  INSTAGRAM
+  PHONE
+  IN_APP
+}
+
+model CrmAccountProfile {
+  id               String             @id @default(cuid())
+  userId           String             @unique @map("user_id")
+  commercialStage  CrmCommercialStage @default(TRIAL_ACTIVE) @map("commercial_stage")
+  referredByUserId String?            @map("referred_by_user_id")
+  referralCode     String?            @map("referral_code") @db.VarChar(32)
+
+  firstEvolutionAt DateTime?          @map("first_evolution_at") @db.Timestamptz(6)
+  firstPatientAt   DateTime?          @map("first_patient_at") @db.Timestamptz(6)
+  firstAgendaAt    DateTime?          @map("first_agenda_at") @db.Timestamptz(6)
+  firstFinanceAt   DateTime?          @map("first_finance_at") @db.Timestamptz(6)
+  firstChatAt      DateTime?          @map("first_chat_at") @db.Timestamptz(6)
+  firstDocumentAt  DateTime?          @map("first_document_at") @db.Timestamptz(6)
+  ahaMomentAt      DateTime?          @map("aha_moment_at") @db.Timestamptz(6)
+  ahaMomentType    CrmAhaMomentType?  @map("aha_moment_type")
+
+  featuresActivated Json?             @map("features_activated")
+
+  healthScore       Int               @default(0) @map("health_score")
+  churnRisk         CrmChurnRisk      @default(LOW) @map("churn_risk")
+  ltvCents          Int               @default(0) @map("ltv_cents")
+  lastActiveAt      DateTime?         @map("last_active_at") @db.Timestamptz(6)
+  metricsComputedAt DateTime?         @map("metrics_computed_at") @db.Timestamptz(6)
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  user       User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  referredBy User? @relation("CrmReferrals", fields: [referredByUserId], references: [id], onDelete: SetNull)
+
+  planChanges         CrmPlanChangeEvent[]
+  satisfactionSurveys CrmSatisfactionSurvey[]
+  alerts              CrmAlert[]
+  notes               CrmAdminNote[]
+  conversations       CrmConversationLog[]
+
+  @@index([commercialStage])
+  @@index([churnRisk])
+  @@index([healthScore])
+  @@map("crm_account_profile")
+}
+
+model CrmPlanChangeEvent {
+  id            String              @id @default(cuid())
+  profileId     String              @map("profile_id")
+  fromPlan      String              @map("from_plan")
+  toPlan        String              @map("to_plan")
+  reason        CrmPlanChangeReason @default(UNKNOWN)
+  reasonNote    String?             @map("reason_note") @db.Text
+  source        String              @default("SYSTEM")
+  stripeEventId String?             @map("stripe_event_id")
+  createdAt     DateTime            @default(now()) @map("created_at")
+
+  profile CrmAccountProfile @relation(fields: [profileId], references: [id], onDelete: Cascade)
+
+  @@index([profileId, createdAt])
+  @@map("crm_plan_change_event")
+}
+
+model CrmSatisfactionSurvey {
+  id          String              @id @default(cuid())
+  profileId   String              @map("profile_id")
+  type        CrmSatisfactionType
+  score       Int
+  feedback    String?             @db.Text
+  milestoneAt DateTime?           @map("milestone_at") @db.Timestamptz(6)
+  createdAt   DateTime            @default(now()) @map("created_at")
+
+  profile CrmAccountProfile @relation(fields: [profileId], references: [id], onDelete: Cascade)
+
+  @@index([profileId, type])
+  @@map("crm_satisfaction_survey")
+}
+
+model CrmAlert {
+  id               String           @id @default(cuid())
+  profileId        String           @map("profile_id")
+  userId           String           @map("user_id")
+  alertType        String           @map("alert_type")
+  severity         CrmAlertSeverity
+  title            String
+  message          String           @db.Text
+  suggestedChannel CrmAlertChannel  @map("suggested_channel")
+  suggestedMessage String?          @map("suggested_message") @db.Text
+  status           CrmAlertStatus   @default(OPEN)
+  metadata         Json?
+  triggeredAt      DateTime         @default(now()) @map("triggered_at") @db.Timestamptz(6)
+  resolvedAt       DateTime?        @map("resolved_at") @db.Timestamptz(6)
+
+  profile CrmAccountProfile @relation(fields: [profileId], references: [id], onDelete: Cascade)
+
+  @@index([status, severity])
+  @@index([userId])
+  @@index([profileId, alertType, status])
+  @@map("crm_alert")
+}
+
+model CrmAdminNote {
+  id          String   @id @default(cuid())
+  profileId   String   @map("profile_id")
+  adminUserId String   @map("admin_user_id")
+  content     String   @db.Text
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  profile CrmAccountProfile @relation(fields: [profileId], references: [id], onDelete: Cascade)
+  admin   User              @relation("CrmAdminNotes", fields: [adminUserId], references: [id], onDelete: Cascade)
+
+  @@index([profileId, createdAt])
+  @@map("crm_admin_note")
+}
+
+model CrmConversationLog {
+  id              String                 @id @default(cuid())
+  profileId       String                 @map("profile_id")
+  channel         CrmConversationChannel
+  direction       String
+  content         String                 @db.Text
+  loggedByAdminId String?                @map("logged_by_admin_id")
+  occurredAt      DateTime               @default(now()) @map("occurred_at") @db.Timestamptz(6)
+  createdAt       DateTime               @default(now()) @map("created_at")
+
+  profile CrmAccountProfile @relation(fields: [profileId], references: [id], onDelete: Cascade)
+
+  @@index([profileId, occurredAt])
+  @@map("crm_conversation_log")
+}
+
+// =============================================================================
+// B2B2C / Yield Management — marketplace de horários ociosos
+// =============================================================================
+
+/**
+ * Especialidade médica/terapêutica ofertada no marketplace (busca B2C).
+ */
+model Specialty {
+  id          String   @id @default(cuid())
+  name        String
+  slug        String   @unique
+  description String?  @db.Text
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  professionals ProfessionalSpecialty[]
+
+  @@index([active, name])
+  @@map("Specialty")
+}
+
+/**
+ * Perfil público do profissional no marketplace.
+ * A localização espacial vive em PostGIS (`geography`); Prisma não indexa GIST.
+ */
+model ProfessionalProfile {
+  id                     String  @id @default(cuid())
+  userId                 String  @unique @map("user_id")
+  /**
+   * Ponto WGS84 (lon/lat). Leitura/escrita espacial via SQL bruto (ST_DWithin).
+   */
+  location               Unsupported("geography(Point, 4326)")?
+  /**
+   * Espelho em graus para o Prisma Client (ST_X = longitude, ST_Y = latitude).
+   */
+  latitude               Decimal? @db.Decimal(10, 7)
+  longitude              Decimal? @db.Decimal(10, 7)
+  city                   String?
+  state                  String?  @db.VarChar(2)
+  neighborhood           String?
+  /**
+   * Texto público da vitrine B2C (bio / como atende). Só Premium+.
+   */
+  publicBio              String?  @map("public_bio") @db.Text
+  /**
+   * Foto profissional da vitrine (Storage). Fallback: avatar/logo do User.
+   */
+  publicPhotoUrl         String?  @map("public_photo_url")
+  /**
+   * Link Google Maps / Maps App (opcional).
+   */
+  mapsUrl                String?  @map("maps_url") @db.VarChar(500)
+  /**
+   * Frase curta na vitrine (ex.: "Quiropraxia e pilates clínico").
+   */
+  publicHeadline         String?  @map("public_headline") @db.VarChar(160)
+  /**
+   * Especialidade escrita pelo profissional para o card da vitrine.
+   */
+  publicSpecialty        String?  @map("public_specialty") @db.VarChar(120)
+  /**
+   * Média de valores publicada só se o profissional preencher.
+   */
+  publicAveragePrice     Decimal? @map("public_average_price") @db.Decimal(10, 2)
+  /**
+   * Opt-in explícito do card na vitrine. Plano Premium, Consultório ou Clínica
+   * continua obrigatório na hora de listar.
+   */
+  showcaseApproved       Boolean  @default(false) @map("showcase_approved")
+  /**
+   * Se verdadeiro, o paciente logado escolhe um horário livre e a marcação
+   * entra na agenda do profissional. Horário com desconto não depende disto.
+   */
+  allowPatientAgendaBooking Boolean @default(false) @map("allow_patient_agenda_booking")
+  yieldManagementEnabled Boolean  @default(false) @map("yield_management_enabled")
+  createdAt              DateTime @default(now()) @map("created_at")
+  updatedAt              DateTime @updatedAt @map("updated_at")
+
+  user              User                    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  specialties       ProfessionalSpecialty[]
+  scheduleSlots     ScheduleSlot[]
+  yieldRules        YieldRule[]
+  offerWindows      YieldOfferWindow[]
+  healthShareGrants HealthShareGrant[]
+  professionalLinks ProfessionalPatientLink[]
+  sharedHealthUpdates SharedHealthUpdate[]
+  mapInvites          ProfessionalMapInvite[]
+  showcaseInquiries ShowcaseInquiry[]
+  showcaseMessages  ShowcaseMessage[]
+  agendaOpenings    ShowcaseAgendaOpening[]
+  dualBookings      ShowcaseDualBooking[]
+
+  @@index([yieldManagementEnabled])
+  @@index([showcaseApproved])
+  @@index([city, state])
+  @@map("ProfessionalProfile")
+}
+
+/**
+ * Mensagem do paciente logado para o profissional da vitrine, para agendar.
+ * Sem telefone e sem e-mail do paciente no card público.
+ */
+model ShowcaseInquiry {
+  id                    String    @id @default(cuid())
+  professionalProfileId String    @map("professional_profile_id")
+  patientId             String    @map("patient_id")
+  body                  String    @db.Text
+  createdAt             DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  readAt                DateTime? @map("read_at") @db.Timestamptz(6)
+
+  professionalProfile ProfessionalProfile @relation(fields: [professionalProfileId], references: [id], onDelete: Cascade)
+  patient             Patient             @relation(fields: [patientId], references: [id], onDelete: Cascade)
+
+  @@index([professionalProfileId, createdAt])
+  @@index([patientId, createdAt])
+  @@map("ShowcaseInquiry")
+}
+
+/**
+ * Horário livre da agenda do profissional, sem dados do paciente.
+ * A vitrine consulta esta projeção. Ela é refeita quando a agenda muda.
+ */
+model ShowcaseAgendaOpening {
+  id                    String   @id @default(cuid())
+  professionalProfileId String   @map("professional_profile_id")
+  startAt               DateTime @map("start_at") @db.Timestamptz(6)
+  endAt                 DateTime @map("end_at") @db.Timestamptz(6)
+
+  professionalProfile ProfessionalProfile @relation(fields: [professionalProfileId], references: [id], onDelete: Cascade)
+
+  @@index([professionalProfileId, startAt])
+  @@index([startAt, endAt])
+  @@map("ShowcaseAgendaOpening")
+}
+
+enum ShowcaseMessageAuthor {
+  PATIENT
+  PROFESSIONAL
+}
+
+/**
+ * Conversa entre o paciente logado e o profissional da vitrine para marcar consulta.
+ * O profissional responde em Meu perfil. Sem telefone e sem e-mail.
+ */
+model ShowcaseMessage {
+  id                    String                 @id @default(cuid())
+  professionalProfileId String                 @map("professional_profile_id")
+  patientId             String                 @map("patient_id")
+  author                ShowcaseMessageAuthor
+  body                  String                 @db.Text
+  createdAt             DateTime               @default(now()) @map("created_at") @db.Timestamptz(6)
+  readAt                DateTime?              @map("read_at") @db.Timestamptz(6)
+
+  professionalProfile ProfessionalProfile @relation(fields: [professionalProfileId], references: [id], onDelete: Cascade)
+  patient             Patient             @relation(fields: [patientId], references: [id], onDelete: Cascade)
+
+  @@index([professionalProfileId, patientId, createdAt])
+  @@index([patientId, createdAt])
+  @@map("ShowcaseMessage")
+}
+
+/**
+ * Marcação nascida na conversa da vitrine.
+ * A mesma consulta existe na agenda do profissional e na agenda do paciente.
+ * Confirmar ou desmarcar de um lado replica no outro.
+ */
+enum ShowcaseDualBookingStatus {
+  PENDING
+  CONFIRMED
+  CANCELLED
+}
+
+model ShowcaseDualBooking {
+  id                    String                    @id @default(cuid())
+  professionalProfileId String                    @map("professional_profile_id")
+  /** Conta B2C do paciente (agenda do Mapa de Saúde). */
+  b2cPatientId          String                    @map("b2c_patient_id")
+  healthProfileId       String                    @map("health_profile_id")
+  /** Consulta na agenda do profissional. Some se a marcação for apagada. */
+  appointmentId         String?                   @unique @map("appointment_id")
+  startAt               DateTime                  @map("start_at") @db.Timestamptz(6)
+  endAt                 DateTime                  @map("end_at") @db.Timestamptz(6)
+  status                ShowcaseDualBookingStatus @default(PENDING)
+  createdAt             DateTime                  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt             DateTime                  @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  professionalProfile ProfessionalProfile @relation(fields: [professionalProfileId], references: [id], onDelete: Cascade)
+  b2cPatient          Patient             @relation(fields: [b2cPatientId], references: [id], onDelete: Cascade)
+  healthProfile       HealthProfile       @relation(fields: [healthProfileId], references: [id], onDelete: Cascade)
+  appointment         Appointment?        @relation(fields: [appointmentId], references: [id], onDelete: SetNull)
+
+  @@index([professionalProfileId, b2cPatientId, startAt])
+  @@index([b2cPatientId, healthProfileId, startAt])
+  @@map("ShowcaseDualBooking")
+}
+
+/**
+ * N:N profissional ↔ especialidade (um fisioterapeuta pode ter mais de uma).
+ */
+model ProfessionalSpecialty {
+  id                    String   @id @default(cuid())
+  professionalProfileId String   @map("professional_profile_id")
+  specialtyId           String   @map("specialty_id")
+  createdAt             DateTime @default(now()) @map("created_at")
+
+  professionalProfile ProfessionalProfile @relation(fields: [professionalProfileId], references: [id], onDelete: Cascade)
+  specialty           Specialty           @relation(fields: [specialtyId], references: [id], onDelete: Cascade)
+
+  @@unique([professionalProfileId, specialtyId])
+  @@index([specialtyId])
+  @@map("ProfessionalSpecialty")
+}
+
+/**
+ * Horário ofertável no marketplace. Fonte de verdade para yield + booking B2C.
+ *
+ * Concorrência / overbooking:
+ * - UNIQUE (professionalProfileId, datetime) impede dois slots no mesmo instante.
+ * - Booking deve usar transação com `SELECT … FOR UPDATE` (row-level lock)
+ *   e `UPDATE … WHERE status = 'AVAILABLE'` (compare-and-set).
+ */
+model ScheduleSlot {
+  id                    String             @id @default(cuid())
+  professionalProfileId String             @map("professional_profile_id")
+  /**
+   * Paciente B2C que reservou. Null enquanto AVAILABLE ou BLOCKED.
+   */
+  patientId             String?            @map("patient_id")
+  yieldRuleId           String?            @map("yield_rule_id")
+  datetime              DateTime           @map("datetime") @db.Timestamptz(6)
+  endAt                 DateTime           @map("end_at") @db.Timestamptz(6)
+  status                ScheduleSlotStatus @default(AVAILABLE)
+  basePrice             Decimal            @map("base_price") @db.Decimal(10, 2)
+  /**
+   * True quando a regra de ociosidade já aplicou desconto neste horário.
+   */
+  yieldActive           Boolean            @default(false) @map("yield_active")
+  discountPrice         Decimal?           @map("discount_price") @db.Decimal(10, 2)
+  /**
+   * Reserva temporária (10 min). Null = BOOKED confirmado (não expira).
+   * Hold expirado volta a AVAILABLE no search/book.
+   */
+  holdExpiresAt         DateTime?          @map("hold_expires_at") @db.Timestamptz(6)
+  /**
+   * Recurso (ServiceSpace) desta oferta. Null = horário do profissional sem sala.
+   */
+  serviceSpaceId        String?            @map("service_space_id")
+  /**
+   * Marcação interna da agenda que ocupou este horário (ponte B2B → marketplace).
+   */
+  appointmentId         String?            @unique @map("appointment_id")
+  /**
+   * Oferta criada manualmente na agenda nativa (não depende só da grade automática).
+   */
+  manualOffer           Boolean            @default(false) @map("manual_offer")
+  createdAt             DateTime           @default(now()) @map("created_at")
+  updatedAt             DateTime           @updatedAt @map("updated_at")
+
+  professional ProfessionalProfile @relation(fields: [professionalProfileId], references: [id], onDelete: Cascade)
+  patient      Patient?            @relation(fields: [patientId], references: [id], onDelete: SetNull)
+  yieldRule    YieldRule?          @relation(fields: [yieldRuleId], references: [id], onDelete: SetNull)
+  appointment  Appointment?        @relation(fields: [appointmentId], references: [id], onDelete: SetNull)
+  serviceSpace ServiceSpace?       @relation(fields: [serviceSpaceId], references: [id], onDelete: SetNull)
+  /**
+   * Tarefa do Mapa de Saúde gerada ao agendar pela vitrine B2C.
+   */
+  healthTasks  HealthTask[]
+
+  @@unique([professionalProfileId, datetime])
+  @@index([status, datetime])
+  @@index([serviceSpaceId, datetime])
+  @@index([yieldActive, status, datetime])
+  @@index([patientId])
+  @@index([professionalProfileId, status])
+  @@index([holdExpiresAt])
+  @@index([manualOffer, status, datetime])
+  @@map("ScheduleSlot")
+}
+
+/**
+ * Regra automática de Gestão Inteligente (yield) do profissional.
+ * Ex.: 24h antes, 30% de desconto se o horário ainda estiver AVAILABLE.
+ */
+model YieldRule {
+  id                    String   @id @default(cuid())
+  professionalProfileId String   @map("professional_profile_id")
+  hoursBeforeTrigger    Int      @map("hours_before_trigger")
+  discountPercentage    Decimal  @map("discount_percentage") @db.Decimal(5, 2)
+  isActive              Boolean  @default(true) @map("is_active")
+  createdAt             DateTime @default(now()) @map("created_at")
+  updatedAt             DateTime @updatedAt @map("updated_at")
+
+  professional  ProfessionalProfile @relation(fields: [professionalProfileId], references: [id], onDelete: Cascade)
+  scheduleSlots ScheduleSlot[]
+
+  @@index([professionalProfileId, isActive])
+  @@index([hoursBeforeTrigger])
+  @@map("YieldRule")
+}
+
+/**
+ * Janela em que o profissional autoriza ofertar ociosidade no marketplace.
+ * WEEKLY = rotatividade fixa (ex.: seg/qua 14h–18h toda semana).
+ * ONCE = data pontual (ex.: só 15/10 das 9h às 12h).
+ */
+enum YieldWindowRecurrence {
+  WEEKLY
+  ONCE
+}
+
+model YieldOfferWindow {
+  id                    String                @id @default(cuid())
+  professionalProfileId String                @map("professional_profile_id")
+  label                 String?
+  /**
+   * Luxon weekday: 1=segunda … 7=domingo. Vazio quando recurrence=ONCE.
+   */
+  weekdays              Int[]                 @default([])
+  /**
+   * Minutos desde meia-noite local (ex.: 480 = 08:00).
+   */
+  startMinute           Int                   @map("start_minute")
+  /**
+   * Fim exclusivo em minutos locais (ex.: 1080 = 18:00).
+   */
+  endMinute             Int                   @map("end_minute")
+  recurrence            YieldWindowRecurrence @default(WEEKLY)
+  /**
+   * Data civil (timezone America/Sao_Paulo) quando recurrence=ONCE.
+   */
+  specificDate          DateTime?             @map("specific_date") @db.Date
+  isActive              Boolean               @default(true) @map("is_active")
+  createdAt             DateTime              @default(now()) @map("created_at")
+  updatedAt             DateTime              @updatedAt @map("updated_at")
+
+  professional ProfessionalProfile @relation(fields: [professionalProfileId], references: [id], onDelete: Cascade)
+
+  @@index([professionalProfileId, isActive])
+  @@index([recurrence, specificDate])
+  @@map("YieldOfferWindow")
+}
+
+// =============================================================================
+// B2C — Mapa de Saúde (prontuário pessoal do paciente / dependentes)
+// =============================================================================
+
+/**
+ * Tipo de lembrete/ação no cronograma de saúde do paciente.
+ */
+enum HealthTaskType {
+  MEDICATION
+  EXAM
+  RETURN_VISIT
+  WATER
+  OTHER
+}
+
+/**
+ * Perfil de saúde sob a conta B2C do paciente (titular ou dependente).
+ * Uma conta (`Patient.authUserId`) pode gerenciar vários perfis.
+ */
+model HealthProfile {
+  id           String    @id @default(cuid())
+  patientId    String    @map("patient_id")
+  /**
+   * Nome de exibição do perfil (ex.: "Maria", "João — filho").
+   */
+  name         String
+  /**
+   * Relação com o titular: self | child | spouse | parent | other.
+   */
+  relationship String?   @db.VarChar(40)
+  dateOfBirth  DateTime? @map("date_of_birth") @db.Date
+  /**
+   * Telefone deste perfil. No titular, espelha Patient.phone.
+   */
+  phone        String?   @db.VarChar(40)
+  /**
+   * Nome do convênio / plano de saúde informado pelo paciente.
+   */
+  insuranceName String?  @map("insurance_name") @db.VarChar(160)
+  /**
+   * Tratamentos em andamento, um por linha, escritos pelo paciente.
+   */
+  treatments   String?   @db.Text
+  /**
+   * Outras informações que o paciente quer lembrar neste perfil.
+   */
+  profileNotes String?   @map("profile_notes") @db.Text
+  isPrimary    Boolean   @default(false) @map("is_primary")
+  /**
+   * Panorama geral da saúde (atualizado a cada intake B2C).
+   */
+  healthPanorama String? @map("health_panorama") @db.Text
+  createdAt    DateTime  @default(now()) @map("created_at")
+  updatedAt    DateTime  @updatedAt @map("updated_at")
+
+  patient           Patient            @relation(fields: [patientId], references: [id], onDelete: Cascade)
+  clinicalSummaries ClinicalSummary[]
+  healthTasks       HealthTask[]
+  dailyHealthChecks DailyHealthCheck[]
+  healthJournalEntries HealthJournalEntry[]
+  healthShareGrants HealthShareGrant[]
+  professionalLinks ProfessionalPatientLink[]
+  sharedHealthUpdates SharedHealthUpdate[]
+  mapInvitesAccepted ProfessionalMapInvite[]
+  /**
+   * Thread única do assistente de saúde B2C (1:1 por perfil).
+   */
+  healthChatSession PatientHealthChatSession?
+  dualBookings      ShowcaseDualBooking[]
+
+  @@index([patientId])
+  @@index([patientId, isPrimary])
+  @@map("HealthProfile")
+}
+
+/**
+ * Resultado do processamento de IA (exame OCR / áudio de consulta).
+ * Guarda o texto original e a explicação em linguagem coloquial.
+ */
+model ClinicalSummary {
+  id                    String   @id @default(cuid())
+  healthProfileId       String   @map("health_profile_id")
+  /**
+   * Texto bruto (transcrição, OCR ou jargão clínico).
+   */
+  originalText          String   @map("original_text") @db.Text
+  /**
+   * Explicação traduzida pela LLM para o paciente.
+   */
+  translatedExplanation String   @map("translated_explanation") @db.Text
+  /**
+   * Referências / fontes opcionais (JSON: [{ title, url? }]).
+   */
+  references            Json?
+  /**
+   * Estrutura da consulta/exame para o hub do paciente
+   * (profissional, especialidade, recomendações, pontos de atenção, orientações).
+   */
+  structured            Json?
+  /**
+   * Origem: exam_ocr | consultation_audio | manual.
+   */
+  sourceType            String?  @map("source_type") @db.VarChar(40)
+  createdAt             DateTime @default(now()) @map("created_at")
+  updatedAt             DateTime @updatedAt @map("updated_at")
+
+  healthProfile HealthProfile @relation(fields: [healthProfileId], references: [id], onDelete: Cascade)
+  healthTasks   HealthTask[]
+
+  @@index([healthProfileId, createdAt])
+  @@map("ClinicalSummary")
+}
+
+/**
+ * Tarefa do cronograma de saúde (medicação, retorno, exame, etc.).
+ */
+model HealthTask {
+  id                String         @id @default(cuid())
+  healthProfileId   String         @map("health_profile_id")
+  clinicalSummaryId String?        @map("clinical_summary_id")
+  /**
+   * Slot da vitrine quando a tarefa veio de um agendamento B2C.
+   */
+  scheduleSlotId    String?        @map("schedule_slot_id")
+  title             String
+  scheduledTime     DateTime?      @map("scheduled_time") @db.Timestamptz(6)
+  type              HealthTaskType @default(OTHER)
+  isCompleted       Boolean        @default(false) @map("is_completed")
+  createdAt         DateTime       @default(now()) @map("created_at")
+  updatedAt         DateTime       @updatedAt @map("updated_at")
+
+  healthProfile   HealthProfile    @relation(fields: [healthProfileId], references: [id], onDelete: Cascade)
+  clinicalSummary ClinicalSummary? @relation(fields: [clinicalSummaryId], references: [id], onDelete: SetNull)
+  scheduleSlot    ScheduleSlot?    @relation(fields: [scheduleSlotId], references: [id], onDelete: SetNull)
+
+  @@index([healthProfileId, isCompleted, scheduledTime])
+  @@index([clinicalSummaryId])
+  @@index([scheduleSlotId])
+  @@map("HealthTask")
+}
+
+/**
+ * Check-in diário do paciente (água, sono, urina, Bristol, atividade).
+ * Campos de relógio são complementares e nunca obrigatórios.
+ * Um registro por perfil e dia (calendário America/Sao_Paulo).
+ */
+model DailyHealthCheck {
+  id                   String    @id @default(cuid())
+  healthProfileId      String    @map("health_profile_id")
+  day                  DateTime  @db.Date
+  waterMl              Int?      @map("water_ml")
+  sleepMinutes         Int?      @map("sleep_minutes")
+  /** 1 péssima … 5 ótima */
+  sleepQuality         Int?      @map("sleep_quality") @db.SmallInt
+  /** pale | yellow | dark | amber */
+  urineColor           String?   @map("urine_color") @db.VarChar(20)
+  /** Escala de Bristol, 1–7 */
+  bristolType          Int?      @map("bristol_type") @db.SmallInt
+  /** brown | yellow | green | pale | black | red */
+  stoolColor           String?   @map("stool_color") @db.VarChar(20)
+  activityMinutes      Int?      @map("activity_minutes")
+  /** apple_health | health_connect | garmin | other */
+  wearableSource       String?   @map("wearable_source") @db.VarChar(40)
+  wearableSteps        Int?      @map("wearable_steps")
+  wearableSleepMinutes Int?      @map("wearable_sleep_minutes")
+  wearableActiveMinutes Int?     @map("wearable_active_minutes")
+  wearableSyncedAt     DateTime? @map("wearable_synced_at") @db.Timestamptz(6)
+  createdAt            DateTime  @default(now()) @map("created_at")
+  updatedAt            DateTime  @updatedAt @map("updated_at")
+
+  healthProfile HealthProfile @relation(fields: [healthProfileId], references: [id], onDelete: Cascade)
+
+  @@unique([healthProfileId, day])
+  @@index([healthProfileId, day])
+  @@map("DailyHealthCheck")
+}
+
+/**
+ * Relato livre do paciente (diário). Distinto da gravação da consulta
+ * e do check-in numérico. Visível ao profissional com reserva vinculada.
+ */
+model HealthJournalEntry {
+  id              String   @id @default(cuid())
+  healthProfileId String   @map("health_profile_id")
+  body            String   @db.Text
+  /** text | audio | mixed */
+  source          String   @default("text") @db.VarChar(20)
+  createdAt       DateTime @default(now()) @map("created_at")
+
+  healthProfile HealthProfile @relation(fields: [healthProfileId], references: [id], onDelete: Cascade)
+
+  @@index([healthProfileId, createdAt])
+  @@map("HealthJournalEntry")
+}
+
+/**
+ * Paciente escolhe qual profissional vê a linha do cuidado
+ * (relatos + consultas gravadas deste perfil).
+ */
+model HealthShareGrant {
+  id                    String   @id @default(cuid())
+  healthProfileId       String   @map("health_profile_id")
+  professionalProfileId String   @map("professional_profile_id")
+  createdAt             DateTime @default(now()) @map("created_at")
+
+  healthProfile HealthProfile       @relation(fields: [healthProfileId], references: [id], onDelete: Cascade)
+  professional  ProfessionalProfile @relation(fields: [professionalProfileId], references: [id], onDelete: Cascade)
+
+  @@unique([healthProfileId, professionalProfileId])
+  @@index([professionalProfileId])
+  @@map("HealthShareGrant")
+}
+
+/**
+ * Vínculo voluntário entre um perfil do Mapa de Saúde e um profissional.
+ * PENDING = convite do profissional aguardando o paciente.
+ */
+model ProfessionalPatientLink {
+  id                    String   @id @default(cuid())
+  healthProfileId       String   @map("health_profile_id")
+  professionalProfileId String   @map("professional_profile_id")
+  /** PENDING | ACTIVE | REVOKED */
+  status                String   @default("PENDING") @db.VarChar(20)
+  /** PATIENT | PROFESSIONAL */
+  initiatedBy           String   @map("initiated_by") @db.VarChar(20)
+  createdAt             DateTime @default(now()) @map("created_at")
+  updatedAt             DateTime @updatedAt @map("updated_at")
+
+  healthProfile HealthProfile       @relation(fields: [healthProfileId], references: [id], onDelete: Cascade)
+  professional  ProfessionalProfile @relation(fields: [professionalProfileId], references: [id], onDelete: Cascade)
+
+  @@unique([healthProfileId, professionalProfileId])
+  @@index([professionalProfileId, status])
+  @@map("ProfessionalPatientLink")
+}
+
+/**
+ * Informação que o paciente escolheu enviar a um profissional vinculado.
+ * INBOX = ficha já existia, espera o profissional incorporar.
+ * ATTACHED = já está na ficha (cadastro novo ou o profissional aceitou).
+ */
+model SharedHealthUpdate {
+  id                    String   @id @default(cuid())
+  healthProfileId       String   @map("health_profile_id")
+  professionalProfileId String   @map("professional_profile_id")
+  professionalUserId    String   @map("professional_user_id")
+  chartPatientId        String?  @map("chart_patient_id")
+  /** JOURNAL | CONSULTATION | EXAM */
+  kind                  String   @db.VarChar(20)
+  sourceId              String   @map("source_id")
+  title                 String   @db.VarChar(180)
+  body                  String   @db.Text
+  /** INBOX | ATTACHED | DISMISSED */
+  status                String   @default("INBOX") @db.VarChar(20)
+  createdAt             DateTime @default(now()) @map("created_at")
+
+  healthProfile HealthProfile       @relation(fields: [healthProfileId], references: [id], onDelete: Cascade)
+  professional  ProfessionalProfile @relation(fields: [professionalProfileId], references: [id], onDelete: Cascade)
+  chartPatient  Patient?            @relation(fields: [chartPatientId], references: [id], onDelete: SetNull)
+
+  @@unique([professionalProfileId, kind, sourceId])
+  @@index([professionalUserId, status, createdAt])
+  @@index([chartPatientId, status])
+  @@map("SharedHealthUpdate")
+}
+
+/**
+ * Convite do profissional para um paciente da ficha criar conta no Mapa
+ * e ficar vinculado. O token vai no link do WhatsApp; o uso é único.
+ */
+model ProfessionalMapInvite {
+  id                       String    @id @default(cuid())
+  token                    String    @unique @db.VarChar(80)
+  professionalProfileId    String    @map("professional_profile_id")
+  professionalUserId       String    @map("professional_user_id")
+  chartPatientId           String    @map("chart_patient_id")
+  acceptedHealthProfileId  String?   @map("accepted_health_profile_id")
+  expiresAt                DateTime  @map("expires_at") @db.Timestamptz(6)
+  acceptedAt               DateTime? @map("accepted_at") @db.Timestamptz(6)
+  createdAt                DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  professional    ProfessionalProfile @relation(fields: [professionalProfileId], references: [id], onDelete: Cascade)
+  chartPatient    Patient             @relation(fields: [chartPatientId], references: [id], onDelete: Cascade)
+  acceptedProfile HealthProfile?      @relation(fields: [acceptedHealthProfileId], references: [id], onDelete: SetNull)
+
+  @@index([chartPatientId, acceptedAt])
+  @@index([professionalUserId, createdAt])
+  @@map("ProfessionalMapInvite")
+}
+
+/**
+ * Sessão de chat do assistente de saúde do paciente (análogo à Ester, escopo 1:1).
+ * Uma thread por HealthProfile — sem lista multi-paciente.
+ */
+model PatientHealthChatSession {
+  id              String   @id @default(cuid())
+  healthProfileId String   @unique @map("health_profile_id")
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  healthProfile HealthProfile              @relation(fields: [healthProfileId], references: [id], onDelete: Cascade)
+  messages      PatientHealthChatMessage[]
+
+  @@map("PatientHealthChatSession")
+}
+
+model PatientHealthChatMessage {
+  id        String   @id @default(cuid())
+  sessionId String   @map("session_id")
+  /**
+   * user | assistant
+   */
+  role      String   @db.VarChar(20)
+  content   String   @db.Text
+  /**
+   * Flags e citações (ex.: evidenceSearchUsed, citations[]).
+   */
+  metadata  Json?
+  createdAt DateTime @default(now()) @map("created_at")
+
+  session PatientHealthChatSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId, createdAt])
+  @@map("PatientHealthChatMessage")
+}
+
+/// Coleta na clínica ou entrega do trabalho protético.
+enum LogisticsTaskType {
+  ENTREGA
+  COLETA
+}
+
+/// Pendente, em rota, concluída ou cancelada no painel do dia.
+enum LogisticsTaskStatus {
+  PENDENTE
+  EM_ROTA
+  CONCLUIDO
+  CANCELADO
+}
+
+/// Lote de áudio ainda em revisão, ou já materializado em tarefas.
+enum LogisticsIntakeStatus {
+  DRAFT
+  CONFIRMED
+}
+
+/**
+ * Dentista ou clínica atendidos pelo laboratório.
+ * O endereço daqui preenche a tarefa quando o fuzzy match vincula o cadastro.
+ */
+model DentistClient {
+  id         String   @id @default(cuid())
+  userId     String   @map("user_id")
+  name       String   @db.VarChar(200)
+  clinicName String?  @map("clinic_name") @db.VarChar(200)
+  address    String   @db.Text
+  phone      String?  @db.VarChar(40)
+  /** Observação de rota para a coleta ou a entrega neste endereço. */
+  routeNote  String?  @map("route_note") @db.Text
+  /**
+   * Formas como a Suzana ou a Ellen citam este cliente no áudio.
+   * Ex.: "Marcelo da Núcleo".
+   */
+  aliases    String[] @default([])
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt  DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  user  User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tasks LogisticsTask[]
+
+  @@index([userId, name])
+  @@index([aliases], type: Gin)
+  @@map("DentistClient")
+}
+
+/**
+ * Um áudio da operação. `tasksJson` é o array validado por `logisticsIntakeSchema`
+ * antes de virar linhas em LogisticsTask.
+ */
+model LogisticsIntake {
+  id                   String                 @id @default(cuid())
+  userId               String                 @map("user_id")
+  createdByIntraUserId String?                @map("created_by_intra_user_id")
+  transcript           String                 @db.Text
+  /** URL do áudio original. Um áudio cobre todas as tarefas deste lote. */
+  audioSourceUrl       String?                @map("audio_source_url") @db.Text
+  tasksJson            Json                   @map("tasks_json")
+  status               LogisticsIntakeStatus  @default(DRAFT)
+  createdAt            DateTime               @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt            DateTime               @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  user      User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdBy IntraUser?      @relation("LogisticsIntakeCreator", fields: [createdByIntraUserId], references: [id], onDelete: SetNull)
+  tasks     LogisticsTask[]
+
+  @@index([userId, createdAt])
+  @@index([createdByIntraUserId])
+  @@map("LogisticsIntake")
+}
+
+/**
+ * Uma ordem de entrega ou coleta. Várias tarefas podem nascer do mesmo áudio.
+ * Sem match de dentista: dentistClientId fica nulo e rawClientName guarda o que foi ouvido.
+ */
+model LogisticsTask {
+  id                 String               @id @default(cuid())
+  userId             String               @map("user_id")
+  intakeId           String               @map("intake_id")
+  type               LogisticsTaskType
+  dentistClientId    String?              @map("dentist_client_id")
+  rawClientName      String               @map("raw_client_name") @db.VarChar(200)
+  workDescription    String?              @map("work_description") @db.Text
+  /** Dia alvo no fuso America/Sao_Paulo. */
+  targetDate         DateTime?            @map("target_date") @db.Date
+  /** Início da janela HH:mm. Null se o áudio citou só o limite. */
+  timeWindowStart    String?              @map("time_window_start") @db.VarChar(5)
+  /** Horário limite HH:mm. Null se o áudio não citou hora. */
+  timeWindowEnd      String?              @map("time_window_end") @db.VarChar(5)
+  status             LogisticsTaskStatus  @default(PENDENTE)
+  motoboyIntraUserId String?              @map("motoboy_intra_user_id")
+  completedAt        DateTime?            @map("completed_at") @db.Timestamptz(6)
+  createdAt          DateTime             @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt          DateTime             @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  user          User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  intake        LogisticsIntake @relation(fields: [intakeId], references: [id], onDelete: Cascade)
+  dentistClient DentistClient? @relation(fields: [dentistClientId], references: [id], onDelete: SetNull)
+  motoboy       IntraUser?     @relation("LogisticsTaskMotoboy", fields: [motoboyIntraUserId], references: [id], onDelete: SetNull)
+  /** Receita no Financeiro, quando o áudio citou valor ou a prótese tem preço no catálogo. */
+  financialTransaction FinancialTransaction?
+
+  @@index([userId, targetDate, status])
+  @@index([intakeId])
+  @@index([dentistClientId])
+  @@index([motoboyIntraUserId])
+  @@map("LogisticsTask")
+}

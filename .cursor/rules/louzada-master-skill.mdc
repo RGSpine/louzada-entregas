@@ -1,0 +1,75 @@
+---
+description: Cérebro do Louzada Entregas — logística voice-first de laboratório de prótese dentária. Domínio, extração em lote, fuzzy match e painel do dia.
+alwaysApply: true
+---
+
+# Louzada Entregas — Skill Mestre
+
+Fonte de negócio: `README.md`. Sistema voice-first de logística para laboratório de prótese. Atores: **Proprietária** (admin), **Suzana** (produção), **Ellen** (administrativo), **3 motoboys** (executores), **dentistas/clínicas** (clientes). O trabalho protético é só a descrição da tarefa, não um prontuário.
+
+Código herdado fala em paciente, consulta e evolução. Código novo fala só no domínio abaixo. Não reintroduzir vocabulário clínico em modelos, rotas, prompts ou UI novos. Não renomear `Patient` nem `Appointment` no lugar: agenda, evolução e financeiro ainda dependem deles.
+
+## 1. Mapeamento de domínio
+
+| Herdado | Destino | Regra |
+|---|---|---|
+| `Patient` | `DentistClient` | Dentista ou clínica, com endereço de coleta/entrega. Sem match, a confirmação cria o cadastro com o nome ouvido e endereço vazio. |
+| `Appointment` e a grade | `LogisticsTask` | Uma `ENTREGA` ou `COLETA`, não uma consulta. |
+| Gravação de evolução | `LogisticsIntake` | Um áudio vira um lote em revisão. Confirmar materializa as tarefas. |
+
+`User` é o laboratório. `IntraUser` é quem opera (Suzana, Ellen, admin). Motoboy é o executor alocado, hoje `motoboyIntraUserId`.
+
+`DentistClient`: nome, clínica, endereço, telefone, apelidos e nota de rota.
+
+`LogisticsIntake` guarda a transcrição, o array revisável e a URL do áudio. `createdById` é o `IntraUser` que gravou.
+
+`LogisticsTask`: `type`, `dentistClientId` opcional, `rawClientName`, `workDescription`, `targetDate`, `timeWindowStart`, `timeWindowEnd`, motoboy em `motoboyIntraUserId`, status `PENDENTE` \| `EM_ROTA` \| `CONCLUIDO` \| `CANCELADO`.
+
+## 2. Pipeline de voz — extração em lote
+
+Um áudio da Suzana ou da Ellen pode conter várias ordens. Depois da transcrição, a IA devolve **um array**. Silêncio vira `null`. Não inventar dentista, data, horário ou serviço.
+
+```ts
+const logisticsTaskDraftSchema = z.object({
+  type: z.enum(["ENTREGA", "COLETA"]),
+  clientName: z.string().min(1),
+  workDescription: z.string().nullable(),
+  targetDate: z.string().nullable(), // YYYY-MM-DD, America/Sao_Paulo
+  timeWindowStart: z.string().nullable(), // HH:mm
+  timeWindowEnd: z.string().nullable(), // HH:mm, horário limite
+});
+
+const logisticsIntakeSchema = z.object({
+  tasks: z.array(logisticsTaskDraftSchema).min(1).max(30),
+});
+```
+
+Rejeitar JSON fora do schema. Não gravar tarefa sem `type` e sem nome citado. O lote fica em revisão até a operadora confirmar.
+
+A data e a hora são relativas ao instante do comando, fuso `America/Sao_Paulo`. O servidor resolve "ontem", "hoje", "amanhã", "semana que vem" e "cinco horas da tarde" (17:00). "Coletar" é `COLETA` e "entregar" é `ENTREGA`, cada uma com a própria data e o próprio horário limite. Não usar o relógio do modelo no lugar desse marco.
+
+## 3. Fuzzy match do dentista
+
+Entrada: `clientName` (ex.: "Marcelo da Núcleo").
+
+1. Normalizar: minúsculas, sem acento, tokens sem "da", "de", "do".
+2. Buscar `DentistClient` do tenant por nome, clínica e `aliases`.
+3. Vincular `dentistClientId` só com correspondência clara. O endereço da tarefa sai desse cadastro.
+4. Sem correspondência clara: `rawClientName` guarda o texto ouvido e a revisão pergunta se pode cadastrar. Sim grava o cliente. Não descarta o cadastro e não cria a linha. O áudio não inventa endereço.
+5. O mesmo cliente serve para `COLETA` e `ENTREGA`. O sentido é o tipo da tarefa. O catálogo importado entra no tenant na primeira leitura, e o match devolve o endereço.
+6. “Entregador Nome” preenche `courierName`. Nome já cadastrado é associado. Nome novo pergunta se pode cadastrar. Sim cria o entregador; não descarta esse cadastro. Cliente e entregador novos no mesmo áudio podem ser gravados os dois. O cadastro manual continua no diretório.
+7. Endereço e telefone faltantes entram depois, no card do cliente ou por comando: “o endereço do Nome é …” e “o telefone do Nome é …”. Nome já cadastrado é atualizado. Nome novo pergunta antes; sim cria o cliente com esses dados, não descarta.
+8. Marcação já confirmada pode ser alterada no card do Painel, no clique da Agenda, ou por comando: “muda a coleta do Nome para amanhã às cinco da tarde”, “troca o entregador…”, “muda o cliente…”, “passa a ser entrega”, “tira o entregador…”. A alteração grava na mesma `LogisticsTask`, e painel e agenda leem esse registro. Nome novo de cliente ou entregador pergunta antes de cadastrar.
+
+## 4. UI zero-fricção
+
+A tela principal é o **Painel do Dia** (hoje, com seletor amanhã/data), em duas colunas: **Pendentes** e **Concluídos**.
+
+- Botão grande de gravar no topo. A revisão mostra o array antes de confirmar o lote.
+- Alocar motoboy: um clique, pills `[Moto 1] [Moto 2] [Moto 3]` no card.
+- Dar baixa: um clique em `[✓ Concluir]`.
+- Card: badge `ENTREGA` ou `COLETA`, horário limite, dentista, endereço, descrição do trabalho.
+- Formulário longo e grade de calendário ficam fora do fluxo principal.
+- O diretório é o CRUD de `DentistClient` (endereço e nota de rota) e dos motoboys ativos.
+
+Fuso: `America/Sao_Paulo`.

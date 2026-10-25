@@ -1,0 +1,320 @@
+/* Schedule-X — altura total e visual próximo ao Google Calendar */
+.agenda-schedule-x-root {
+  --sx-z-index-week-header: 10;
+  --sx-calendar-header-popup-z-index: 20;
+  --sx-z-index-event-modal: 30;
+}
+
+/* Desktop / PWA larga — dimensões originais */
+.agenda-schedule-x-root .sx-react-calendar-wrapper {
+  width: 100%;
+  height: min(82vh, 960px);
+  min-height: 520px;
+  max-height: calc(100vh - 7rem);
+}
+
+.agenda-schedule-x-root .sx__calendar-wrapper {
+  border-radius: 0.75rem;
+  border: 1px solid var(--border);
+  background: var(--card);
+  overflow: hidden;
+  box-shadow: var(--shadow-elevation-1);
+  height: 100%;
+}
+
+.agenda-schedule-x-root .sx__week-grid__hour-text,
+.agenda-schedule-x-root .sx__week-grid__day-name {
+  font-size: 0.75rem;
+  color: var(--muted-foreground);
+}
+
+/*
+ * Contenção da grade: colunas flex defaultam min-width:auto e incham com o
+ * texto do card — o evento “vaza” para o dia vizinho. Forçamos min-width:0 +
+ * overflow hidden para o left/width % do Schedule-X voltar a bater na coluna.
+ */
+.agenda-schedule-x-root .sx__week-grid {
+  min-width: 0;
+}
+
+.agenda-schedule-x-root .sx__time-grid-day {
+  min-width: 0;
+  overflow: hidden;
+  position: relative;
+  /* Acima do time-axis (linhas horárias), para a grade receber clique/arraste. */
+  z-index: 1;
+}
+
+/*
+ * Linhas horizontais ficam na camada de fundo: visíveis na grade vazia,
+ * cobertas pelos cards de marcação (que “flutuam” por cima).
+ */
+.agenda-schedule-x-root .sx__week-grid__time-axis {
+  z-index: 0;
+  pointer-events: none;
+}
+
+.agenda-schedule-x-root .sx__week-grid__date {
+  min-width: 0;
+}
+
+.agenda-schedule-x-root .sx__time-grid-event {
+  box-sizing: border-box !important;
+  cursor: grab;
+  z-index: 2;
+  /* Anula borda/inline style do tema Schedule-X (contorno azul do calendarId) */
+  border: 0 !important;
+  border-width: 0 !important;
+  border-style: none !important;
+  border-color: transparent !important;
+  outline: none !important;
+  box-shadow: none !important;
+  background: transparent !important;
+  background-color: transparent !important;
+  padding: 0 !important;
+  overflow: hidden !important;
+  max-width: 100%;
+  width: 100% !important; /* tema usa calc(100% - 10px) e deixa “faixa” lateral */
+}
+
+.agenda-schedule-x-root .sx__time-grid-event.is-event-copy {
+  z-index: 4;
+}
+
+.agenda-schedule-x-root .sx__time-grid-event:active {
+  cursor: grabbing;
+}
+
+.agenda-schedule-x-root .sx__time-grid-event-inner {
+  min-width: 0;
+  max-width: 100%;
+  height: 100%;
+  overflow: hidden;
+  border: none !important;
+  box-shadow: none !important;
+}
+
+/* Wrapper do custom component Schedule-X — sem moldura extra */
+.agenda-schedule-x-root .sx__time-grid-event [data-ccid],
+.agenda-schedule-x-root .sx__time-grid-event > div {
+  border: none !important;
+  outline: none !important;
+  height: 100%;
+  max-width: 100%;
+  min-width: 0;
+}
+
+.agenda-schedule-x-root .agenda-time-grid-event {
+  min-width: 0;
+  max-width: 100%;
+  border: none !important;
+  outline: none !important;
+  /* Fundo opaco (bg-card no componente) cobre as linhas sob o card. */
+  isolation: isolate;
+}
+
+.agenda-schedule-x-root .agenda-time-grid-event p,
+.agenda-schedule-x-root .agenda-time-grid-event span {
+  flex-shrink: 0;
+}
+
+.agenda-schedule-x-root .sx__month-grid-wrapper,
+.agenda-schedule-x-root .sx__month-grid {
+  min-height: 0;
+  height: 100%;
+}
+
+.agenda-schedule-x-root .sx__month-grid-day {
+  min-height: 5.5rem;
+}
+
+.agenda-schedule-x-root .sx__month-grid-event {
+  border: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  padding: 0 !important;
+}
+
+.agenda-schedule-x-root .agenda-month-grid-event {
+  display: block;
+  max-width: 100%;
+}
+
+.agenda-schedule-x-root .sx__week-grid__day.is-today .sx__week-grid__day-name {
+  color: var(--primary);
+  font-weight: 600;
+}
+
+/* Botão “Hoje” do Schedule-X: removido — o rótulo não acompanha o dia selecionado */
+.agenda-schedule-x-root .sx__today-button {
+  display: none !important;
+}
+
+/* Mobile — tela cheia estilo Google Calendar */
+@media (max-width: 1023px) {
+  .agenda-schedule-x-root {
+    display: flex;
+    flex: 1 1 auto;
+    flex-direction: column;
+    min-height: 0;
+    height: 100%;
+  }
+
+  .agenda-schedule-x-root .sx-react-calendar-wrapper {
+    display: flex;
+    flex: 1 1 auto;
+    flex-direction: column;
+    height: 100%;
+    min-height: 0;
+    max-height: none;
+  }
+
+  .agenda-schedule-x-root .sx__calendar-wrapper {
+    display: flex;
+    flex: 1 1 auto;
+    flex-direction: column;
+    min-height: 0;
+    height: 100%;
+    border: none;
+    border-radius: 0;
+    box-shadow: none;
+    background: var(--background);
+  }
+
+  .agenda-schedule-x-root .sx__calendar {
+    flex: 1 1 auto;
+    min-height: 0;
+    border: none;
+    border-radius: 0;
+    background: var(--background);
+  }
+
+  .agenda-schedule-x-root .sx__calendar-header {
+    flex-shrink: 0;
+    flex-wrap: nowrap;
+    gap: 0.25rem;
+    padding: 0.375rem 0.5rem;
+    border-bottom: 1px solid var(--border);
+    background: var(--background);
+  }
+
+  .agenda-schedule-x-root .sx__calendar-header-content {
+    flex: 1;
+    gap: 0.25rem;
+    min-width: 0;
+  }
+
+  .agenda-schedule-x-root .sx__range-heading {
+    font-size: 0.9375rem;
+    max-width: 7.5rem;
+  }
+
+  .agenda-schedule-x-root .sx__view-selection-label {
+    display: none;
+  }
+
+  .agenda-schedule-x-root .sx__view-selection-selected-item,
+  .agenda-schedule-x-root .sx__date-picker-wrapper .sx__date-input {
+    min-height: 2rem;
+    padding: 0.25rem 0.5rem;
+    font-size: 0.75rem;
+  }
+
+  .agenda-schedule-x-root .sx__view-container {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior: contain;
+  }
+
+  .agenda-schedule-x-root .sx__week-header {
+    position: sticky;
+    top: 0;
+    z-index: var(--sx-z-index-week-header);
+    background: var(--background);
+  }
+
+  /* Semana no mobile: grade com scroll horizontal (colunas legíveis). */
+  .agenda-schedule-x-root .sx__calendar-wrapper.is-week-view .sx__view-container {
+    overflow-x: auto;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .agenda-schedule-x-root .sx__calendar-wrapper.is-week-view .sx__week-wrapper,
+  .agenda-schedule-x-root .sx__calendar-wrapper.is-week-view .sx__week-header,
+  .agenda-schedule-x-root .sx__calendar-wrapper.is-week-view .sx__week-grid {
+    min-width: 36rem;
+  }
+
+  .agenda-schedule-x-root .sx__week-grid__day-name {
+    font-size: 0.625rem;
+    text-transform: lowercase;
+  }
+
+  .agenda-schedule-x-root .sx__week-grid__hour-text {
+    font-size: 0.625rem;
+  }
+
+  .agenda-schedule-x-root .sx__week-grid__date-number {
+    font-size: 0.875rem;
+    height: 1.75em;
+    width: 1.75em;
+  }
+
+}
+
+/* Desktop — formato paisagem, preenche a viewport disponível */
+@media (min-width: 1024px) {
+  .agenda-schedule-x-root {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    min-height: 0;
+  }
+
+  .agenda-schedule-x-root .sx-react-calendar-wrapper {
+    display: flex;
+    flex: 1 1 auto;
+    flex-direction: column;
+    height: 100%;
+    min-height: 0;
+    max-height: none;
+  }
+
+  .agenda-schedule-x-root .sx__calendar-wrapper {
+    display: flex;
+    flex: 1 1 auto;
+    flex-direction: column;
+    min-height: 0;
+    height: 100%;
+    border-radius: 0.75rem;
+    border: 1px solid var(--border);
+    box-shadow: var(--shadow-elevation-1);
+    background: var(--card);
+  }
+
+  .agenda-schedule-x-root .sx__calendar {
+    flex: 1 1 auto;
+    min-height: 0;
+  }
+
+  .agenda-schedule-x-root .sx__view-container {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+  }
+
+  /* Cabeçalho dos dias fixo enquanto a grade rola verticalmente. */
+  .agenda-schedule-x-root .sx__week-header {
+    position: sticky;
+    top: 0;
+    z-index: var(--sx-z-index-week-header);
+    background: var(--card);
+  }
+
+  .agenda-schedule-x-root .sx__time-grid-event {
+    padding: 1px !important;
+  }
+}

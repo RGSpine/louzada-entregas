@@ -1,0 +1,13 @@
+{
+  "name": "Louzada Entregas",
+  "short_name": "Louzada",
+  "description": "Agenda, captação de áudio e documentos, transcrição e financeiro.",
+  "lang": "pt-BR",
+  "start_url": "/dashboard",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#e7eef8",
+  "theme_color": "#00008f",
+  "categories": ["productivity", "business"]
+}

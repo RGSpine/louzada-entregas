@@ -1,0 +1,2 @@
+{"sessionId":"3513c2","runId":"post-fix-schema","hypothesisId":"H-schema-case","location":"tsconfig.json","message":"schema enum mismatches and TS6 config diagnostics","timestamp":1792788240422,"data":{"tsVersion":"6.0.3","schemaMisses":[],"target":4,"lib":["lib.dom.d.ts","lib.dom.iterable.d.ts","lib.esnext.d.ts"],"diagnosticCount":0,"diagnostics":[]}}
+{"sessionId":"3513c2","runId":"json-ls","hypothesisId":"H-json","location":"json-language-server","message":"validateContent","timestamp":1792788576639,"data":[]}

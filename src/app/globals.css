@@ -1,0 +1,170 @@
+@import "tailwindcss";
+@import "../design/tokens.css";
+
+/* Dark mode via class (next-themes): .dark no html ativa as utilities dark: */
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-clinical: var(--clinical);
+  --color-clinical-foreground: var(--clinical-foreground);
+  --color-coleta: var(--coleta);
+  --color-entrega: var(--entrega);
+  --radius-sm: var(--radius-sm);
+  --radius-md: var(--radius-md);
+  --radius-lg: var(--radius-lg);
+  --radius-xl: var(--radius-xl);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+  --breakpoint-sm: 40rem;
+  --breakpoint-md: 48rem;
+  --breakpoint-lg: 64rem;
+  --breakpoint-xl: 80rem;
+  --breakpoint-2xl: 96rem;
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-geist-sans), system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: var(--font-size-base);
+  line-height: var(--line-height-comfortable);
+}
+
+/* Superfície grouped list (HIG) */
+@layer components {
+  .clinical-grouped {
+    @apply rounded-xl border border-border bg-card shadow-[var(--shadow-elevation-1)];
+  }
+
+  .clinical-grouped-inset {
+    @apply rounded-lg border border-border/80 bg-muted/50;
+  }
+
+  .clinical-elevated {
+    box-shadow: var(--shadow-elevation-2);
+  }
+
+  /* Palco atrás, bandeja recuada, card e comando no plano da frente. */
+  .depth-stage {
+    background-color: var(--background);
+    background-image:
+      radial-gradient(980px 460px at 8% -12%, color-mix(in srgb, var(--primary) 16%, transparent), transparent 68%),
+      linear-gradient(180deg, color-mix(in srgb, var(--card) 70%, var(--background)), var(--background) 240px);
+  }
+
+  .depth-well {
+    border-radius: 1.25rem;
+    background: var(--well);
+    box-shadow: var(--shadow-inset);
+    padding: 0.85rem;
+  }
+
+  .depth-card {
+    border-radius: 1rem;
+    background: var(--card);
+    color: var(--card-foreground);
+    border: 1px solid color-mix(in srgb, var(--foreground) 8%, transparent);
+    box-shadow: var(--shadow-elevation-2);
+  }
+
+  .depth-front {
+    border-radius: 1.25rem;
+    background: var(--card);
+    color: var(--card-foreground);
+    border: 1px solid color-mix(in srgb, var(--primary) 18%, transparent);
+    box-shadow: var(--shadow-elevation-3);
+  }
+
+  .depth-settled {
+    border-radius: 1rem;
+    background: color-mix(in srgb, var(--card) 70%, var(--well));
+    color: var(--card-foreground);
+    box-shadow: var(--shadow-elevation-1);
+  }
+
+  .depth-field {
+    border-radius: var(--radius-md);
+    border: 1px solid var(--input);
+    background: color-mix(in srgb, var(--well) 45%, var(--card));
+    color: var(--foreground);
+    box-shadow: inset 0 1px 2px color-mix(in srgb, var(--foreground) 8%, transparent);
+  }
+
+  .badge-entrega,
+  .badge-coleta {
+    display: inline-flex;
+    border-radius: var(--radius-full);
+    padding: 0.125rem 0.5rem;
+    font-size: 0.75rem;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+  }
+
+  .badge-entrega {
+    color: var(--entrega);
+    background: color-mix(in srgb, var(--entrega) 12%, transparent);
+  }
+
+  .badge-coleta {
+    color: var(--coleta);
+    background: color-mix(in srgb, var(--coleta) 16%, transparent);
+  }
+}
+
+/* Alvos de toque confortáveis (≥44px) — WCAG / iOS HIG */
+@layer utilities {
+  @media (pointer: coarse) {
+    .min-touch {
+      min-height: 2.75rem;
+      min-width: 2.75rem;
+    }
+
+    .min-touch-inline {
+      min-height: 2.75rem;
+    }
+
+    .touch-controls-comfortable [data-slot="button"] {
+      min-height: 2.75rem;
+    }
+  }
+
+  .safe-area-pb {
+    padding-bottom: max(0.75rem, env(safe-area-inset-bottom));
+  }
+
+  .safe-area-pt {
+    padding-top: max(0.75rem, env(safe-area-inset-top));
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
