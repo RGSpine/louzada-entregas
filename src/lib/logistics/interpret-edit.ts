@@ -1,9 +1,12 @@
 import { normalizePtExpression } from "@/lib/schedule-temporal-parse";
 
+import { PERSON_TITLE_PATTERN } from "@/lib/logistics/person-name";
 import { resolveLogisticsDate, resolveLogisticsTime } from "@/lib/logistics/temporal-resolve";
 
 const EDIT_CUE =
   /\b(muda|mudar|altere|altera|alterar|troca|trocar|adia|adiar|antecipa|antecipar|remarca|remarcar|corrige|corrigir|tira|tirar|remove|remover|retira|retirar|passa a ser|passa para)\b/;
+
+const STATUS_CUE = /\b(?:conclui|concluir|concluida|baixa|cancela|cancelar|cancelada)\b|\bcomo realizad[ao]\b/;
 
 const DATE_WORD =
   "depois de amanha|semana que vem(?:\\s+(?:na|nesta))?\\s+(?:segunda|terca|quarta|quinta|sexta|sabado|domingo)(?:-feira| feira)?|semana que vem|(?:proxima|essa|esta|nesta)\\s+(?:segunda|terca|quarta|quinta|sexta|sabado|domingo)(?:-feira| feira)?|hoje|ontem|amanha|(?:segunda|terca|quarta|quinta|sexta|sabado|domingo)(?:-feira| feira)?|\\d{1,2}/\\d{1,2}(?:/\\d{2,4})?|\\d{4}-\\d{2}-\\d{2}";
@@ -19,6 +22,7 @@ export type LogisticsEditIntent = {
   targetDate: string | null;
   timeWindowStart: string | null;
   timeWindowEnd: string | null;
+  status: "CONCLUIDO" | "CANCELADO" | null;
 };
 
 function titleName(raw: string): string {
@@ -36,14 +40,16 @@ function asType(word: string | undefined): "ENTREGA" | "COLETA" | null {
 }
 
 function pickSubjectClient(source: string): string | null {
-  const found = source.match(/\b(?:coleta|entrega)\s+d[aeo]\s+(?:dr\.?\s*|doutora?\s+)?([a-z0-9][a-z0-9' .-]{1,80})/);
+  const found = source.match(
+    new RegExp(`\\b(?:coleta|entrega)\\s+d[aeo]\\s+(?:(?:o|a)\\s+)?(?:${PERSON_TITLE_PATTERN})?([a-z][a-z']{1,40}(?:\\s+[a-z][a-z']{1,40}){0,3})`),
+  );
   if (!found?.[1]) return null;
   const name = found[1]
-    .replace(/\b(para|passa|de|hoje|ontem|amanha|ate|as|semana)\b.*$/, "")
+    .replace(/\b(para|passa|de|hoje|ontem|amanha|ate|as|semana|como)\b.*$/, "")
     .replace(/[.,;:!?]+/g, " ")
     .replace(/\s+/g, " ")
     .trim();
-  if (!name || /^(dr|doutor|doutora)$/.test(name)) return null;
+  if (!name || /^(dr|dra|doutor|doutora|dentista|profissional)$/.test(name)) return null;
   return titleName(name);
 }
 
@@ -53,7 +59,7 @@ function pickPerson(raw: string): string | null {
     .replace(new RegExp(`\\b(?:${DATE_WORD})\\b.*$`), "")
     .replace(/\b(?:das|entre|ate|as)\b.*$/, "")
     .replace(/\bcom o entregador\b.*$/, "")
-    .replace(/^(?:o|a|dr|doutor|doutora)\s+/, "")
+    .replace(new RegExp(`^(?:(?:o|a|ao)\\s+)?(?:${PERSON_TITLE_PATTERN})`), "")
     .replace(/[.,;:!?]+/g, " ")
     .replace(/[^a-z0-9' .-]/g, " ")
     .replace(/\s+/g, " ")
@@ -73,9 +79,16 @@ function pickWindow(text: string): { start: string | null; end: string | null } 
   return { start: null, end: resolveLogisticsTime(clock[1]) };
 }
 
+function heardStatus(normalized: string): "CONCLUIDO" | "CANCELADO" | null {
+  if (/\b(?:cancela|cancelar|cancelada)\b/.test(normalized)) return "CANCELADO";
+  if (/\b(?:conclui|concluir|concluida|baixa)\b|\bcomo realizad[ao]\b/.test(normalized)) return "CONCLUIDO";
+  return null;
+}
+
 function interpretClause(clause: string, now: Date): LogisticsEditIntent | null {
   const normalized = normalizePtExpression(clause);
-  if (!EDIT_CUE.test(normalized)) return null;
+  const status = heardStatus(normalized);
+  if (!EDIT_CUE.test(normalized) && !status) return null;
 
   const clearCourier = /\b(tira|remove|retira|retire)\b.{0,40}\bentregador\b|\bsem entregador\b/.test(normalized);
   const [source = "", destination = ""] = normalized.split(/\b(?:para|passa a ser)\b/);
@@ -109,6 +122,7 @@ function interpretClause(clause: string, now: Date): LogisticsEditIntent | null 
     targetDate: resolveLogisticsDate(toDate?.[1], now),
     timeWindowStart: window.start,
     timeWindowEnd: window.end,
+    status,
   };
   const changed =
     intent.type != null ||
@@ -117,19 +131,21 @@ function interpretClause(clause: string, now: Date): LogisticsEditIntent | null 
     intent.clearCourier ||
     intent.targetDate != null ||
     intent.timeWindowStart != null ||
-    intent.timeWindowEnd != null;
+    intent.timeWindowEnd != null ||
+    intent.status != null;
   return changed ? intent : null;
 }
 
 export function transcriptHasEditCue(transcript: string): boolean {
-  return EDIT_CUE.test(normalizePtExpression(transcript));
+  const normalized = normalizePtExpression(transcript);
+  return EDIT_CUE.test(normalized) || STATUS_CUE.test(normalized);
 }
 
 /** Uma frase de alteração vira a marcação que deve ser encontrada e o que muda nela. */
 export function interpretLogisticsEdits(transcript: string, now: Date): LogisticsEditIntent[] {
   return transcript
     .split(/\s*[/;]\s*/)
-    .flatMap((chunk) => chunk.split(/\s+\be\s+(?=(?:muda|troca|altera|adia|a coleta|a entrega|o entregador|o cliente)\b)/))
+    .flatMap((chunk) => chunk.split(/\s+\be\s+(?=(?:muda|troca|altera|adia|conclui|cancela|a coleta|a entrega|o entregador|o cliente)\b)/))
     .map((clause) => interpretClause(clause.trim(), now))
     .filter((intent): intent is LogisticsEditIntent => intent != null);
 }

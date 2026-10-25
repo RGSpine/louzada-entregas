@@ -22,6 +22,14 @@ const HOUR_WORDS: Record<string, number> = {
   dez: 10,
   onze: 11,
   doze: 12,
+  treze: 13,
+  catorze: 14,
+  quatorze: 14,
+  quinze: 15,
+  dezesseis: 16,
+  dezessete: 17,
+  dezoito: 18,
+  dezenove: 19,
 };
 
 const WEEKDAY_TO_NUM: Record<string, number> = {
@@ -82,7 +90,7 @@ export function formatTemporalAnchor(anchor: TemporalAnchor): string {
     `amanhã = ${anchor.amanha}`,
     `depois de amanhã = ${anchor.depoisDeAmanha}`,
     `semana que vem começa na segunda ${anchor.semanaQueVem}`,
-    "cinco horas da tarde = 17:00; seis da tarde = 18:00; meio-dia = 12:00; meia-noite = 00:00.",
+    "cinco horas da tarde = 17:00; dezessete horas = 17:00; seis da tarde = 18:00; meio-dia = 12:00; meia-noite = 00:00.",
     "coleta/coletar = COLETA. entrega/entregar = ENTREGA. O horário limite fica em timeWindowEnd.",
   ].join("\n");
 }
@@ -120,33 +128,19 @@ export function resolveLogisticsDate(
   return DateTime.fromJSDate(resolved.startUtc, { zone: "utc" }).setZone(tz).toFormat("yyyy-LL-dd");
 }
 
-/** Resolve "17:00", "17h", "cinco horas da tarde", "meio-dia". */
-export function resolveLogisticsTime(expression: string | null | undefined): string | null {
-  if (!expression?.trim()) return null;
-  let n = normalizePtExpression(expression)
-    .replace(/[.,;:!?]+/g, " ")
-    .replace(/\bhoras?\b/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-  if (n === "meio dia" || n === "meio-dia") return "12:00";
-  if (n === "meia noite" || n === "meia-noite") return "00:00";
+const SPOKEN_HOUR =
+  "vinte e uma|vinte e um|vinte e duas|vinte e dois|vinte e tres|vinte|dezenove|dezessete|dezoito|dezesseis|quatorze|catorze|quinze|treze|onze|doze|uma|um|duas|dois|tres|quatro|cinco|seis|sete|oito|nove|dez";
 
-  const clock = n.match(/^(\d{1,2}):(\d{2})$/);
-  if (clock) return padClock(Number(clock[1]), Number(clock[2]));
+function hourFromSpoken(token: string): number | null {
+  if (token === "vinte") return 20;
+  if (token === "vinte e uma" || token === "vinte e um") return 21;
+  if (token === "vinte e duas" || token === "vinte e dois") return 22;
+  if (token === "vinte e tres") return 23;
+  if (/^\d+$/.test(token)) return Number(token);
+  return HOUR_WORDS[token] ?? null;
+}
 
-  const compact = n.match(/^(\d{1,2})\s*h\s*(\d{2})?$/);
-  if (compact) return padClock(Number(compact[1]), compact[2] ? Number(compact[2]) : 0);
-
-  const half = /\be meia\b/.test(n);
-  n = n.replace(/\be meia\b/g, " ").replace(/\s+/g, " ").trim();
-  const spoken = n.match(
-    /^(?:as |a )?(\d{1,2}|uma|um|duas|dois|tres|quatro|cinco|seis|sete|oito|nove|dez|onze|doze)(?: (da manha|de manha|da tarde|da noite))?$/,
-  );
-  if (!spoken) return null;
-  const rawHour = /^\d+$/.test(spoken[1] ?? "") ? Number(spoken[1]) : HOUR_WORDS[spoken[1] ?? ""];
-  if (rawHour == null) return null;
-  const minute = half ? 30 : 0;
-  const period = spoken[2];
+function clockFromHour(rawHour: number, minute: number, period?: string): string | null {
   let hour = rawHour;
   if (period === "da tarde" || period === "da noite") {
     if (hour < 12) hour += 12;
@@ -154,4 +148,45 @@ export function resolveLogisticsTime(expression: string | null | undefined): str
     if (hour === 12) hour = 0;
   }
   return padClock(hour, minute);
+}
+
+/**
+ * Resolve "17:00", "17h", "cinco horas da tarde", "dezessete horas".
+ * O horário pode vir no meio da frase ("às dezessete horas, entregador Paulo").
+ */
+export function resolveLogisticsTime(expression: string | null | undefined): string | null {
+  if (!expression?.trim()) return null;
+  const n = normalizePtExpression(expression).replace(/[.,;:!?]+/g, " ").replace(/\s+/g, " ").trim();
+  if (/\bmeio[- ]dia\b/.test(n)) return "12:00";
+  if (/\bmeia[- ]noite\b/.test(n)) return "00:00";
+
+  const numericClock = firstNumericClock(n);
+  if (numericClock) return numericClock;
+
+  const spoken = n.match(
+    new RegExp(`\\b(${SPOKEN_HOUR})(?:\\s+horas?)?(?:\\s+e\\s+meia)?(?:\\s+(da manha|de manha|da tarde|da noite))?\\b`),
+  );
+  if (!spoken) return null;
+  const rawHour = hourFromSpoken(spoken[1] ?? "");
+  if (rawHour == null) return null;
+  const mentioned =
+    /\bhoras?\b|\bda tarde\b|\bda noite\b|\bda manha\b|\bde manha\b|\bas\b|\bate\b|\bh\b|\be meia\b/.test(n);
+  if (!mentioned && n !== spoken[1]) return null;
+  const minute = /\be meia\b/.test(spoken[0] ?? "") ? 30 : 0;
+  return clockFromHour(rawHour, minute, spoken[2]);
+}
+
+function firstNumericClock(n: string): string | null {
+  const re = /\b(\d{1,2})(?::(\d{2}))?(?:\s*h(?:\s*(\d{2}))?)?\b/g;
+  for (const match of n.matchAll(re)) {
+    const ownClock = match[2] != null || match[3] != null || /h/i.test(match[0]);
+    const window = n.slice(Math.max(0, (match.index ?? 0) - 6), (match.index ?? 0) + match[0].length + 16);
+    const nearMarker = /\b(?:as|ate|horas?|da tarde|da noite|da manha|de manha)\b/.test(window);
+    if (!ownClock && !nearMarker && n !== match[1]) continue;
+    const minute = match[2] ? Number(match[2]) : match[3] ? Number(match[3]) : 0;
+    const period = window.match(/\b(da tarde|da noite|da manha|de manha)\b/)?.[1];
+    const clock = clockFromHour(Number(match[1]), minute, period);
+    if (clock) return clock;
+  }
+  return null;
 }

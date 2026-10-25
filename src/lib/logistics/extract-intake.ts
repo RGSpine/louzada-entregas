@@ -56,8 +56,9 @@ ${transcript.trim()}
 
 Extraia um array de ordens. Uma frase pode ter várias. Não invente dentista, data, hora, valor ou forma de pagamento.
 Se o nome não foi dito, clientName = null.
+Doutor, doutora, dr, dra, dentista e profissional são prefixos: não entram em clientName. "para a doutora Adriana" e "a doutora Adriana" têm clientName "Adriana", em qualquer posição da frase. Não invente sobrenome. "entregador Rafael" e "quem fará a entrega é o Rafael" são o entregador, não o cliente.
 dateExpression é a expressão ouvida ("hoje", "amanhã", "semana que vem", "próxima terça") ou YYYY-MM-DD.
-timeWindowEndExpression é o horário limite ("cinco horas da tarde", "18:00"). timeWindowStartExpression só se houver início de janela.
+timeWindowEndExpression é o horário limite ("cinco horas da tarde", "dezessete horas", "18:00"). "Dezessete horas" é 17:00. timeWindowStartExpression só se houver início de janela. Uma ordem falada é uma tarefa, mesmo que o verbo entregar ou coletar se repita.
 coleta/coletar = COLETA. entrega/entregar = ENTREGA.
 amountExpression é o valor ouvido ("800 reais", "R$ 1.250,50") ou null. Horário não é valor.
 paymentMethod é a forma ouvida (pix, dinheiro, cartão, transferência) ou null.

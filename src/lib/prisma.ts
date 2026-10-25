@@ -75,7 +75,13 @@ function agendaUserIdFromWrite(
   return null;
 }
 
-const resolvedDatabaseUrl = databaseUrl ? resolvePrismaDatabaseUrl(databaseUrl) : undefined;
+// next dev fica aberto o tempo todo. O pooler de transação (6543) fila cada leitura.
+// No computador local a sessão (5432) reaproveita a conexão. A Vercel continua no 6543.
+const resolvedDatabaseUrl = databaseUrl
+  ? process.env.NODE_ENV !== "production" && directUrl
+    ? resolvePrismaDirectUrl(directUrl)
+    : resolvePrismaDatabaseUrl(databaseUrl)
+  : undefined;
 if (globalForPrisma.prisma && globalForPrisma.prismaUrl !== resolvedDatabaseUrl) {
   void globalForPrisma.prisma.$disconnect().catch(() => undefined);
   globalForPrisma.prisma = undefined;

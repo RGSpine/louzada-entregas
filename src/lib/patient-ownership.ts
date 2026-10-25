@@ -1,25 +1,9 @@
+import { getRequestDbUser } from "@/lib/auth/request-user";
 import { prisma } from "@/lib/prisma";
-import { createSupabaseServerClient } from "@/lib/supabase-server";
 
 /** ID do User (Prisma) da sessão Supabase atual, ou null se não autenticado. */
 export async function getAuthenticatedDbUserId(): Promise<string | null> {
-  const supabase = await createSupabaseServerClient();
-  const {
-    data: { user: authUser },
-    error: authError,
-  } = await supabase.auth.getUser();
-
-  if (authError || !authUser) {
-    return null;
-  }
-
-  const dbUser = await prisma.user.findFirst({
-    where: {
-      OR: [{ authUserId: authUser.id }, { email: authUser.email ?? "" }],
-    },
-    select: { id: true },
-  });
-
+  const dbUser = await getRequestDbUser();
   return dbUser?.id ?? null;
 }
 

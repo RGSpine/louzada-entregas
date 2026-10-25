@@ -1,7 +1,6 @@
 import { cookies, headers } from "next/headers";
 import { redirect } from "next/navigation";
-import { createSupabaseServerClient } from "@/lib/supabase-server";
-import { prisma } from "@/lib/prisma";
+import { getRequestAuthUser, getRequestDbUser } from "@/lib/auth/request-user";
 import { DashboardSubnavChrome } from "@/components/dashboard/DashboardSubnavChrome";
 import { PlanAccessGateClient } from "@/components/dashboard/PlanAccessGateClient";
 import { PendingCheckoutGate } from "@/components/dashboard/PendingCheckoutGate";
@@ -28,37 +27,13 @@ export default async function DashboardLayout({
 }: {
   children: React.ReactNode;
 }) {
-  const supabase = await createSupabaseServerClient();
-  const {
-    data: { user: authUser },
-    error: authError,
-  } = await supabase.auth.getUser();
+  const authUser = await getRequestAuthUser();
 
-  if (authError || !authUser) {
+  if (!authUser) {
     redirect("/login");
   }
 
-  const dbUser = await prisma.user.findFirst({
-    where: {
-      OR: [
-        { authUserId: authUser.id },
-        { email: authUser.email ?? "" },
-      ],
-    },
-    select: {
-      id: true,
-      email: true,
-      plan: true,
-      isInfluencer: true,
-      isBlocked: true,
-      name: true,
-      profession: true,
-      councilType: true,
-      councilNumber: true,
-      stripeSubscriptionId: true,
-      basicoCheckoutRequired: true,
-    },
-  });
+  const dbUser = await getRequestDbUser();
 
   if (!dbUser) {
     redirect("/register/complete");

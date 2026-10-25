@@ -155,6 +155,7 @@ export function DashboardPagesMenu() {
                   <li key={page.href}>
                     <Link
                       href={page.href}
+                      prefetch={false}
                       onClick={close}
                       className={cn(
                         "flex gap-3 rounded-lg border border-transparent p-3 transition-colors",

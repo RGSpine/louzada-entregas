@@ -9,19 +9,21 @@ import {
   cancelLogisticsTaskAction,
   concludeLogisticsTask,
   confirmLogisticsBatch,
+  discardLogisticsBatch,
   previewLogisticsAudio,
   previewLogisticsCommand,
   refreshDraftIdentity,
   registerSpokenClientAction,
 } from "@/app/actions/logistics";
 import { AgendaAudioRecorder } from "@/components/dashboard/AgendaAudioRecorder";
+import { CallLink } from "@/components/dashboard/logistics/CallLink";
 import { EditProposals } from "@/components/dashboard/logistics/EditProposals";
 import { TaskEditForm } from "@/components/dashboard/logistics/TaskEditForm";
 import { Button } from "@/components/ui/button";
 import { brlInputToCents, centsToBrlInput } from "@/lib/logistics/money";
 import type { DayTaskView, LogisticsDraftView, LogisticsEditProposal, SpokenClientDraft } from "@/server/services/logistics";
 
-type Motoboy = { id: string; name: string; active?: boolean };
+type Motoboy = { id: string; name: string; active?: boolean; phone?: string | null };
 
 const PAYMENT_OPTIONS = [
   { value: "", label: "Não citada" },
@@ -39,14 +41,86 @@ function clockLabel(task: { timeWindowStart: string | null; timeWindowEnd: strin
   return "Sem horário";
 }
 
+function normalizeLookup(value: string) {
+  return value.trim().toLocaleLowerCase("pt-BR");
+}
+
+function couriersSharingName(heard: string | null, motoboys: Motoboy[]) {
+  if (!heard?.trim()) return [];
+  const key = normalizeLookup(heard);
+  const active = motoboys.filter((motoboy) => motoboy.active !== false);
+  const exact = active.filter((motoboy) => normalizeLookup(motoboy.name) === key);
+  if (exact.length === 1) return [];
+  const first = key.split(/\s+/)[0] ?? "";
+  const heardParts = key.split(/\s+/).filter(Boolean);
+  return active.filter((motoboy) => {
+    const parts = normalizeLookup(motoboy.name).split(/\s+/).filter(Boolean);
+    if (parts[0] !== first) return false;
+    return heardParts.every((part) => parts.includes(part));
+  });
+}
+
+function ProfessionalPicker({
+  choices,
+  onPick,
+  onUnknown,
+}: {
+  choices: LogisticsDraftView["clientChoices"];
+  onPick: (choice: LogisticsDraftView["clientChoices"][number]) => void;
+  onUnknown: () => void;
+}) {
+  const [query, setQuery] = useState("");
+  const needle = normalizeLookup(query);
+  const visible = choices.filter((choice) =>
+    normalizeLookup([choice.name, choice.clinicName ?? "", choice.address].join(" ")).includes(needle),
+  );
+  return (
+    <div className="mt-2">
+      <p className="text-sm">Há mais de um profissional com esse nome. Escolha pelo nome e pelo sobrenome.</p>
+      <input
+        className="depth-field mt-1 w-full px-2 py-1 text-sm"
+        placeholder="Buscar profissional"
+        value={query}
+        onChange={(event) => setQuery(event.target.value)}
+      />
+      <select
+        className="depth-field mt-1 w-full px-2 py-1 text-sm"
+        defaultValue=""
+        onChange={(event) => {
+          const choice = choices.find((item) => item.id === event.target.value);
+          if (choice) onPick(choice);
+        }}
+      >
+        <option value="">Selecione o profissional</option>
+        {visible.map((choice) => (
+          <option key={choice.id} value={choice.id}>
+            {[choice.name, choice.clinicName, choice.address].filter(Boolean).join(" · ")}
+          </option>
+        ))}
+      </select>
+      <Button type="button" variant="outline" className="mt-2" onClick={onUnknown}>
+        Não está na lista
+      </Button>
+    </div>
+  );
+}
+
+function formatDay(iso: string) {
+  const [year, month, day] = iso.split("-");
+  if (!year || !month || !day) return iso;
+  return `${day}/${month}/${year}`;
+}
+
 export function DayPanel({
   date,
   tasks,
   motoboys,
+  openDates,
 }: {
   date: string;
   tasks: DayTaskView[];
   motoboys: Motoboy[];
+  openDates: string[];
 }) {
   const router = useRouter();
   const [pending, startTransition] = useTransition();
@@ -83,14 +157,30 @@ export function DayPanel({
     setDrafts((current) => current?.map((item, itemIndex) => (itemIndex === index ? { ...item, ...patch } : item)) ?? null);
   }
 
-  function run(action: () => Promise<{ ok: boolean; error?: string; contactNotes?: string[] }>) {
+  function discardReview(next: LogisticsDraftView[] | null) {
+    if (next && next.length > 0) {
+      setDrafts(next);
+      return;
+    }
+    const id = intakeId;
+    setDrafts(null);
+    setIntakeId(null);
+    if (!id) return;
+    startTransition(async () => {
+      const result = await discardLogisticsBatch(id);
+      if (!result.ok) setError(result.error);
+    });
+  }
+
+  function run(action: () => Promise<{ ok: boolean; error?: string; contactNotes?: string[]; targetDate?: string | null }>) {
     setError(null);
     startTransition(async () => {
       const result = await action();
       if (!result.ok) setError(result.error ?? "Não foi possível concluir.");
       else {
         setNotice(result.contactNotes?.join(" ") || null);
-        router.refresh();
+        if (result.targetDate && result.targetDate !== date) router.push(`/dashboard/painel?date=${result.targetDate}`);
+        else router.refresh();
       }
     });
   }
@@ -197,7 +287,15 @@ export function DayPanel({
 
       {drafts && intakeId ? (
         <section className="rounded-2xl border border-warning/40 bg-warning/10 p-4 shadow-[var(--shadow-elevation-2)]">
-          <h2 className="text-lg font-medium">Revisão do áudio</h2>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <h2 className="text-lg font-medium">Revisão do áudio</h2>
+            <Button type="button" variant="outline" disabled={pending} onClick={() => discardReview(null)}>
+              Descartar lote
+            </Button>
+          </div>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Confira cada ordem. Descarte a que saiu errada antes de confirmar.
+          </p>
           <ul className="mt-3 space-y-3">
             {drafts.map((task, index) => (
               <li key={`${task.type}-${index}`} className="depth-card p-3">
@@ -216,12 +314,30 @@ export function DayPanel({
                     }}
                   />
                 </label>
-                <p className="mt-1 text-sm text-muted-foreground">
-                  {task.matchedName
-                    ? `${task.matchedName}${task.address ? ` · ${task.address}` : " · endereço ainda vazio"}${task.phone ? ` · ${task.phone}` : " · telefone ainda vazio"}`
-                    : "Não identifiquei esse cliente pelo nome."}
-                </p>
-                {!task.dentistClientId && task.rawClientName ? (
+                {task.clientChoices.length > 0 && !task.dentistClientId ? (
+                  <ProfessionalPicker
+                    choices={task.clientChoices}
+                    onPick={(choice) =>
+                      patchDraft(index, {
+                        dentistClientId: choice.id,
+                        matchedName: choice.name,
+                        clientName: choice.name,
+                        address: choice.address,
+                        phone: choice.phone,
+                        createClient: false,
+                        clientChoices: [],
+                      })
+                    }
+                    onUnknown={() => patchDraft(index, { createClient: true, clientChoices: [] })}
+                  />
+                ) : (
+                  <p className="mt-1 text-sm text-muted-foreground">
+                    {task.matchedName
+                      ? `${task.matchedName}${task.address ? ` · ${task.address}` : " · endereço ainda vazio"}${task.phone ? ` · ${task.phone}` : " · telefone ainda vazio"}`
+                      : "Não identifiquei esse cliente pelo nome."}
+                  </p>
+                )}
+                {!task.dentistClientId && task.rawClientName && task.clientChoices.length === 0 ? (
                   <RegistrationQuestion
                     prompt={`Não identifiquei o cliente ${task.rawClientName}. Posso cadastrá-lo como um novo cliente?`}
                     answer={task.createClient}
@@ -244,12 +360,36 @@ export function DayPanel({
                     />
                   </div>
                 ) : null}
-                {task.courierName ? (
-                  <p className="mt-2 text-sm">
-                    {task.courierKnown ? `Entregador ${task.courierName} já está no cadastro.` : `Não identifiquei o entregador ${task.courierName}.`}
+                <label className="mt-2 block text-sm">
+                  Entregador
+                  <select
+                    className="depth-field mt-1 w-full px-2 py-1"
+                    value={task.motoboyIntraUserId ?? ""}
+                    onChange={(event) => {
+                      const motoboy = pills.find((item) => item.id === event.target.value);
+                      patchDraft(index, motoboy
+                        ? { courierName: motoboy.name, motoboyIntraUserId: motoboy.id, courierKnown: true, createCourier: false }
+                        : { courierName: null, motoboyIntraUserId: null, courierKnown: false, createCourier: false });
+                    }}
+                  >
+                    <option value="">Sem entregador</option>
+                    {pills.map((motoboy) => (
+                      <option key={motoboy.id} value={motoboy.id}>
+                        {motoboy.phone ? `${motoboy.name} · ${motoboy.phone}` : motoboy.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                {task.courierName && !task.motoboyIntraUserId ? (
+                  <p className="mt-1 text-sm">
+                    {couriersSharingName(task.courierName, pills).length > 1
+                      ? `Há mais de um entregador chamado ${task.courierName}. Escolha qual é.`
+                      : `Não identifiquei o entregador ${task.courierName}.`}
                   </p>
+                ) : task.courierKnown && task.courierName ? (
+                  <p className="mt-1 text-sm text-muted-foreground">Entregador {task.courierName} já está no cadastro.</p>
                 ) : null}
-                {task.courierName && !task.courierKnown ? (
+                {task.courierName && !task.courierKnown && couriersSharingName(task.courierName, pills).length === 0 ? (
                   <RegistrationQuestion
                     prompt={`Não identifiquei o entregador ${task.courierName}. Posso cadastrá-lo como um novo entregador?`}
                     answer={task.createCourier}
@@ -292,6 +432,15 @@ export function DayPanel({
                     : "Sem valor, esta ordem fica só na agenda."}{" "}
                   Coletas, entregas e a data ficam na agenda.
                 </p>
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="mt-3"
+                  disabled={pending}
+                  onClick={() => discardReview(drafts.filter((_, itemIndex) => itemIndex !== index))}
+                >
+                  Descartar esta ordem
+                </Button>
               </li>
             ))}
           </ul>
@@ -306,13 +455,12 @@ export function DayPanel({
                   setIntakeId(null);
                   setCommand("");
                   const finance = result.financeCount;
+                  const day = result.targetDate ? formatDay(result.targetDate) : null;
+                  const placed = day ? `${result.count} ordem(ns) na agenda de ${day}, em pendentes.` : `${result.count} ordem(ns) na agenda.`;
                   return {
                     ok: true as const,
-                    contactNotes: [
-                      finance > 0
-                        ? `${result.count} ordem(ns) na agenda. ${finance} valor(es) no Financeiro.`
-                        : `${result.count} ordem(ns) na agenda.`,
-                    ],
+                    targetDate: result.targetDate,
+                    contactNotes: [finance > 0 ? `${placed} ${finance} valor(es) no Financeiro.` : placed],
                   };
                 }
                 return result;
@@ -327,14 +475,30 @@ export function DayPanel({
       <EditProposals
         proposals={edits}
         onApplied={(taskId) => {
+          const proposal = edits.find((item) => item.taskId === taskId);
           setEdits((current) => current.filter((item) => item.taskId !== taskId));
           setNotice("Marcação atualizada no painel e na agenda.");
-          router.refresh();
+          if (proposal?.targetDate && proposal.targetDate !== date) router.push(`/dashboard/painel?date=${proposal.targetDate}`);
+          else router.refresh();
         }}
       />
 
       <div className="grid gap-4 md:grid-cols-2">
-        <TaskColumn title="Pendentes" empty="Nada pendente neste dia.">
+        <TaskColumn title="Pendentes" empty={openDates.length > 0 ? "" : "Nada pendente neste dia."}>
+          {pendingTasks.length === 0 && openDates.length > 0 ? (
+            <p className="text-sm text-muted-foreground">
+              Nada pendente neste dia. Há pendências em{" "}
+              {openDates.map((openDate, index) => (
+                <span key={openDate}>
+                  {index > 0 ? ", " : null}
+                  <button type="button" className="font-medium text-primary underline" onClick={() => router.push(`/dashboard/painel?date=${openDate}`)}>
+                    {formatDay(openDate)}
+                  </button>
+                </span>
+              ))}
+              .
+            </p>
+          ) : null}
           {pendingTasks.map((task) => (
             <article key={task.id} className="depth-card p-4">
               {editingId === task.id ? (
@@ -368,6 +532,11 @@ export function DayPanel({
                     <p className="text-xs text-muted-foreground">Criada por {task.createdByName}</p>
                   ) : null}
                   {task.address ? <p className="text-sm text-muted-foreground">{task.address}</p> : null}
+                  {task.clientPhone ? (
+                    <CallLink phone={task.clientPhone} who={task.matchedName ?? task.rawClientName} />
+                  ) : (
+                    <p className="text-sm text-muted-foreground">Cliente sem telefone</p>
+                  )}
                   {task.workDescription ? <p className="text-sm">{task.workDescription}</p> : null}
                   <div className="mt-3 flex flex-wrap gap-2">
                     {pills.map((motoboy) => (
@@ -385,6 +554,13 @@ export function DayPanel({
                     {task.motoboyName ? `Entregador ${task.motoboyName}` : "Sem entregador"}
                     {task.status === "EM_ROTA" ? " · Em rota" : ""}
                   </p>
+                  {task.motoboyName ? (
+                    task.motoboyPhone ? (
+                      <CallLink phone={task.motoboyPhone} who={task.motoboyName} />
+                    ) : (
+                      <p className="text-sm text-muted-foreground">Entregador sem telefone</p>
+                    )
+                  ) : null}
                   <div className="mt-3 flex flex-wrap gap-2">
                     <Button variant="outline" disabled={pending} onClick={() => setEditingId(task.id)}>
                       Editar
@@ -437,6 +613,16 @@ export function DayPanel({
                     {clockLabel(task)}
                     {task.motoboyName ? ` · Entregador ${task.motoboyName}` : ""}
                   </p>
+                  {task.clientPhone ? (
+                    <CallLink phone={task.clientPhone} who={task.matchedName ?? task.rawClientName} />
+                  ) : (
+                    <p className="text-sm text-muted-foreground">Cliente sem telefone</p>
+                  )}
+                  {task.motoboyName && task.motoboyPhone ? (
+                    <CallLink phone={task.motoboyPhone} who={task.motoboyName} />
+                  ) : task.motoboyName ? (
+                    <p className="text-sm text-muted-foreground">Entregador sem telefone</p>
+                  ) : null}
                   <Button className="mt-3" variant="outline" disabled={pending} onClick={() => setEditingId(task.id)}>
                     Editar
                   </Button>

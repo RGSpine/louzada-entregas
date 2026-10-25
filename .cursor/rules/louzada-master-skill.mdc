@@ -48,22 +48,32 @@ Rejeitar JSON fora do schema. Não gravar tarefa sem `type` e sem nome citado. O
 
 A data e a hora são relativas ao instante do comando, fuso `America/Sao_Paulo`. O servidor resolve "ontem", "hoje", "amanhã", "semana que vem" e "cinco horas da tarde" (17:00). "Coletar" é `COLETA` e "entregar" é `ENTREGA`, cada uma com a própria data e o próprio horário limite. Não usar o relógio do modelo no lugar desse marco.
 
+O horário acaba antes do cliente e do entregador. "Entrega para amanhã até às cinco da tarde, o entregador Rafael para a doutora Adriana" é uma ordem: data amanhã, limite 17:00, entregador Rafael, cliente Adriana.
+
+A ordem das palavras não troca o papel. "Entrega amanhã até às cinco da tarde para a doutora Adriana, quem fará a entrega é o Rafael" é a mesma ordem: cliente Adriana, entregador Rafael. "Quem fará a entrega é o Nome", "quem fará é o Nome", "o Nome é quem vai entregar" e "o entregador Nome" marcam o entregador. "Para a doutora Nome", "a doutora Nome" e "para o cliente doutor Nome" marcam o profissional. "Irá entregar" no meio da frase não abre outra ordem.
+
+Doutor, doutora, dr, dra, dentista e profissional são prefixos. O nome gravado é o que vem depois. "Para a doutora Adriana" tem `clientName` Adriana. Não inventar sobrenome. Entregador é o executor, não o cliente.
+
 ## 3. Fuzzy match do dentista
 
 Entrada: `clientName` (ex.: "Marcelo da Núcleo").
 
-1. Normalizar: minúsculas, sem acento, tokens sem "da", "de", "do".
-2. Buscar `DentistClient` do tenant por nome, clínica e `aliases`.
-3. Vincular `dentistClientId` só com correspondência clara. O endereço da tarefa sai desse cadastro.
-4. Sem correspondência clara: `rawClientName` guarda o texto ouvido e a revisão pergunta se pode cadastrar. Sim grava o cliente. Não descarta o cadastro e não cria a linha. O áudio não inventa endereço.
-5. O mesmo cliente serve para `COLETA` e `ENTREGA`. O sentido é o tipo da tarefa. O catálogo importado entra no tenant na primeira leitura, e o match devolve o endereço.
-6. “Entregador Nome” preenche `courierName`. Nome já cadastrado é associado. Nome novo pergunta se pode cadastrar. Sim cria o entregador; não descarta esse cadastro. Cliente e entregador novos no mesmo áudio podem ser gravados os dois. O cadastro manual continua no diretório.
-7. Endereço e telefone faltantes entram depois, no card do cliente ou por comando: “o endereço do Nome é …” e “o telefone do Nome é …”. Nome já cadastrado é atualizado. Nome novo pergunta antes; sim cria o cliente com esses dados, não descarta.
-8. Marcação já confirmada pode ser alterada no card do Painel, no clique da Agenda, ou por comando: “muda a coleta do Nome para amanhã às cinco da tarde”, “troca o entregador…”, “muda o cliente…”, “passa a ser entrega”, “tira o entregador…”. A alteração grava na mesma `LogisticsTask`, e painel e agenda leem esse registro. Nome novo de cliente ou entregador pergunta antes de cadastrar.
+1. Na leitura do áudio, percorrer a lista inteira de profissionais e de entregadores do tenant. Qualquer nome cadastrado ocupa o papel da lista em que está, na ordem em que foi falado. Quem está só entre os entregadores não vira profissional, e o contrário também. O mesmo nome nas duas listas não é escolhido sozinho.
+2. Normalizar: minúsculas, sem acento, tokens sem "da", "de", "do" e sem prefixo (doutor, doutora, dr, dra, dentista, profissional).
+3. Buscar `DentistClient` do tenant por nome, clínica e `aliases`. Primeiro nome e sobrenome contam. Um caractere a menos ou a mais em nome longo ainda aproxima (Adrianda e Adriana).
+4. Primeiro nome único vincula esse cadastro, mesmo sem sobrenome. O endereço da tarefa sai desse cadastro.
+5. Primeiro nome repetido (duas Adrianas, dois Rodrigos, duas Anas): se o sobrenome ouvido fecha um só cadastro, vincula esse. Se não, a revisão não cadastra sozinha. Mostra a busca pelo nome e o dropdown com nome, clínica e endereço. A operadora escolhe. "Não está na lista" volta a perguntar se pode cadastrar.
+6. Sem correspondência: `rawClientName` guarda o texto ouvido e a revisão pergunta se pode cadastrar. Sim grava o cliente. Não descarta o cadastro e não cria a linha. O áudio não inventa endereço.
+7. O mesmo cliente serve para `COLETA` e `ENTREGA`. O sentido é o tipo da tarefa. O catálogo importado entra no tenant na primeira leitura, e o match devolve o endereço.
+8. “Entregador Nome” preenche `courierName`. Primeiro nome único associa. Primeiro nome repetido abre o dropdown com o nome completo. Nome novo pergunta se pode cadastrar. Sim cria o entregador; não descarta esse cadastro. Cliente e entregador novos no mesmo áudio podem ser gravados os dois. O cadastro manual continua no diretório.
+9. Endereço e telefone faltantes entram depois, no card do cliente ou por comando: “o endereço do Nome é …” e “o telefone do Nome é …”. Nome já cadastrado é atualizado. Nome novo pergunta antes; sim cria o cliente com esses dados, não descarta.
+10. Marcação já confirmada pode ser alterada no card do Painel, no clique da Agenda, ou por comando: “muda a coleta do Nome para amanhã às cinco da tarde”, “troca o entregador…”, “muda o cliente…”, “passa a ser entrega”, “tira o entregador…”. A alteração grava na mesma `LogisticsTask`, e painel e agenda leem esse registro. Nome novo de cliente ou entregador pergunta antes de cadastrar. O prefixo doutor, doutora, dentista ou profissional também sai do nome na alteração.
 
 ## 4. UI zero-fricção
 
-A tela principal é o **Painel do Dia** (hoje, com seletor amanhã/data), em duas colunas: **Pendentes** e **Concluídos**.
+A tela principal é o **Painel do Dia** (hoje, com seletor amanhã/data), em duas colunas: **Pendentes** e **Realizadas e canceladas**.
+
+Confirmar o lote grava a ordem como `PENDENTE` na data ouvida e abre essa data no painel. Nomear o entregador não tira a ordem de Pendentes. Marcar como realizada, no card do painel, no clique da agenda ou por áudio (“conclui a coleta do Nome”, “cancela a entrega do Nome”), grava `CONCLUIDO` ou `CANCELADO` na mesma `LogisticsTask`. Registros lista só `CONCLUIDO`.
 
 - Botão grande de gravar no topo. A revisão mostra o array antes de confirmar o lote.
 - Alocar motoboy: um clique, pills `[Moto 1] [Moto 2] [Moto 3]` no card.

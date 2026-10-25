@@ -29,12 +29,18 @@ export function resolvePrismaDatabaseUrl(rawUrl: string): string {
   }
 }
 
-/** DIRECT_URL / Session pooler (5432) — usado pelo Prisma migrate e db push. */
+/** DIRECT_URL / Session pooler (5432) — usado pelo Prisma migrate e pelo servidor local. */
 export function resolvePrismaDirectUrl(rawUrl: string): string {
   try {
     const url = new URL(rawUrl);
+    if (!url.searchParams.has("connection_limit")) {
+      url.searchParams.set("connection_limit", "5");
+    }
+    if (!url.searchParams.has("pool_timeout")) {
+      url.searchParams.set("pool_timeout", "15");
+    }
     if (!url.searchParams.has("connect_timeout")) {
-      url.searchParams.set("connect_timeout", "60");
+      url.searchParams.set("connect_timeout", "15");
     }
     return url.toString();
   } catch {

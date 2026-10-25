@@ -72,6 +72,12 @@ export const DASHBOARD_NAV_PAGES: readonly DashboardNavPageDef[] = [
     icon: "calendar",
   },
   {
+    href: "/dashboard/registros",
+    title: "Registros",
+    description: "Busca de coletas e entregas por dia, cliente e entregador",
+    icon: "fileStack",
+  },
+  {
     href: "/dashboard/finances",
     title: "Financeiro",
     description: "Caixa e serviços de prótese",

@@ -41,7 +41,9 @@ const nextConfig: NextConfig = {
               "frame-ancestors 'none'",
               "base-uri 'self'",
               "form-action 'self' https://checkout.stripe.com",
-              "upgrade-insecure-requests",
+              // No dev o site é http://localhost. Essa diretiva manda o navegador buscar
+              // o CSS em https e o layout inteiro fica sem o visual publicado.
+              ...(process.env.NODE_ENV === "production" ? ["upgrade-insecure-requests"] : []),
             ].join("; "),
           },
         ],

@@ -57,7 +57,10 @@ export function DashboardNotificationsBell() {
   }, []);
 
   useEffect(() => {
-    void load();
+    const id = window.setTimeout(() => {
+      void load();
+    }, 2000);
+    return () => window.clearTimeout(id);
   }, [load, pathname]);
 
   useEffect(() => {

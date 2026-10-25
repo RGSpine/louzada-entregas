@@ -1,6 +1,5 @@
-import { levenshteinDistance, normalizePatientName } from "@/lib/similar-patient-match";
-
-const STOPWORDS = new Set(["da", "de", "do", "das", "dos", "dr", "dra", "doutor", "doutora"]);
+import { levenshteinDistance } from "@/lib/similar-patient-match";
+import { personTokens, tokensClose } from "@/lib/logistics/person-name";
 
 export type DentistMatchCandidate = {
   id: string;
@@ -11,17 +10,49 @@ export type DentistMatchCandidate = {
   aliases: string[];
 };
 
+export type DentistChoice = {
+  id: string;
+  name: string;
+  clinicName: string | null;
+  address: string;
+  phone: string | null;
+};
+
 export type DentistMatch = {
   dentistClientId: string | null;
   matchedName: string | null;
   address: string | null;
   rawClientName: string;
+  /** Mais de um profissional com o mesmo primeiro nome. A revisão escolhe. */
+  clientChoices: DentistChoice[];
 };
 
 function tokens(value: string): string[] {
-  return normalizePatientName(value)
-    .split(/[^a-z0-9]+/)
-    .filter((token) => token && !STOPWORDS.has(token));
+  return personTokens(value);
+}
+
+function choiceOf(candidate: DentistMatchCandidate): DentistChoice {
+  return {
+    id: candidate.id,
+    name: candidate.name,
+    clinicName: candidate.clinicName,
+    address: candidate.address,
+    phone: candidate.phone ?? null,
+  };
+}
+
+function labelTokens(candidate: DentistMatchCandidate): string[] {
+  return tokens([candidate.name, candidate.clinicName ?? "", ...candidate.aliases].join(" "));
+}
+
+function sharesFirstName(queryFirst: string, candidate: DentistMatchCandidate): boolean {
+  const labels = [tokens(candidate.name), ...candidate.aliases.map((alias) => tokens(alias))];
+  return labels.some((parts) => tokensClose(queryFirst, parts[0] ?? ""));
+}
+
+function sharesSurname(querySurnames: string[], candidate: DentistMatchCandidate): boolean {
+  const known = labelTokens(candidate).slice(1);
+  return querySurnames.every((surname) => known.some((part) => tokensClose(surname, part)));
 }
 
 function similarity(left: string, right: string): number {
@@ -40,16 +71,55 @@ function bestLabelScore(query: string, candidate: DentistMatchCandidate): number
   return Math.max(...labels.map((label) => similarity(query, label)));
 }
 
+function linked(candidate: DentistMatchCandidate, rawClientName: string): DentistMatch {
+  return {
+    dentistClientId: candidate.id,
+    matchedName: candidate.name,
+    address: candidate.address,
+    rawClientName,
+    clientChoices: [],
+  };
+}
+
+function ambiguous(peers: DentistMatchCandidate[], rawClientName: string): DentistMatch {
+  return {
+    dentistClientId: null,
+    matchedName: null,
+    address: null,
+    rawClientName,
+    clientChoices: peers
+      .slice()
+      .sort((left, right) => left.name.localeCompare(right.name, "pt-BR"))
+      .map(choiceOf),
+  };
+}
+
+function unmatched(rawClientName: string): DentistMatch {
+  return { dentistClientId: null, matchedName: null, address: null, rawClientName, clientChoices: [] };
+}
+
 /**
- * Só vincula com correspondência clara. Sem isso, o nome ouvido fica em rawClientName.
+ * Prefixo (doutor, doutora, dentista, profissional) não entra no nome.
+ * Primeiro nome único vincula. Primeiro nome repetido pede o sobrenome:
+ * se o sobrenome ouvido fecha um só cadastro, vincula; se não, devolve a lista.
  */
 export function matchDentistClient(
   clientName: string | null,
   candidates: DentistMatchCandidate[],
 ): DentistMatch {
   const rawClientName = clientName?.trim() ?? "";
-  if (!rawClientName) {
-    return { dentistClientId: null, matchedName: null, address: null, rawClientName: "" };
+  if (!rawClientName) return unmatched("");
+
+  const query = tokens(rawClientName);
+  const queryFirst = query[0] ?? "";
+  const peers = queryFirst ? candidates.filter((candidate) => sharesFirstName(queryFirst, candidate)) : [];
+
+  if (peers.length === 1) return linked(peers[0]!, rawClientName);
+  if (peers.length > 1) {
+    const narrowed = query.length >= 2 ? peers.filter((candidate) => sharesSurname(query.slice(1), candidate)) : [];
+    if (narrowed.length === 1) return linked(narrowed[0]!, rawClientName);
+    if (narrowed.length > 1) return ambiguous(narrowed, rawClientName);
+    return ambiguous(peers, rawClientName);
   }
 
   const ranked = candidates
@@ -62,14 +132,6 @@ export function matchDentistClient(
     best.score >= 0.84 &&
     (second == null || best.score - second.score >= 0.08);
 
-  if (!clear || !best) {
-    return { dentistClientId: null, matchedName: null, address: null, rawClientName };
-  }
-
-  return {
-    dentistClientId: best.candidate.id,
-    matchedName: best.candidate.name,
-    address: best.candidate.address,
-    rawClientName,
-  };
+  if (!clear || !best) return unmatched(rawClientName);
+  return linked(best.candidate, rawClientName);
 }

@@ -3,7 +3,8 @@
 import { useEffect } from "react";
 import { useRouter } from "next/navigation";
 
-const INTERVAL_MS = 12_000;
+const INTERVAL_MS = 60_000;
+const MIN_GAP_MS = 45_000;
 
 function isBusy(): boolean {
   if (document.visibilityState !== "visible") return true;
@@ -19,8 +20,12 @@ export function LabSharedRefresh() {
   const router = useRouter();
 
   useEffect(() => {
+    let last = 0;
     const tick = () => {
       if (isBusy()) return;
+      const now = Date.now();
+      if (now - last < MIN_GAP_MS) return;
+      last = now;
       router.refresh();
     };
     const id = window.setInterval(tick, INTERVAL_MS);

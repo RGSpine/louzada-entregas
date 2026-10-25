@@ -1,7 +1,7 @@
 "use server";
 
+import { getRequestAuthUser, getRequestDbUser } from "@/lib/auth/request-user";
 import { prisma } from "@/lib/prisma";
-import { createSupabaseServerClient } from "@/lib/supabase-server";
 import { isPlatformOwnerEmail, resolveSessionEmail } from "@/lib/plan-limits";
 import {
   isLegacyFreeGraceExpired,
@@ -20,29 +20,10 @@ export type PlanAccessGate = {
 };
 
 export async function getPlanAccessGate(): Promise<PlanAccessGate | null> {
-  const supabase = await createSupabaseServerClient();
-  const {
-    data: { user: authUser },
-  } = await supabase.auth.getUser();
-
+  const authUser = await getRequestAuthUser();
   if (!authUser?.id) return null;
 
-  const dbUser = await prisma.user.findFirst({
-    where: {
-      OR: [{ authUserId: authUser.id }, { email: authUser.email ?? "" }],
-    },
-    select: {
-      id: true,
-      plan: true,
-      email: true,
-      isInfluencer: true,
-      stripeSubscriptionId: true,
-      basicoCheckoutRequired: true,
-      legacyFreeSunsetNoticeSentAt: true,
-      legacyFreeSunsetEndsAt: true,
-    },
-  });
-
+  const dbUser = await getRequestDbUser();
   if (!dbUser) return null;
 
   const sessionEmail = resolveSessionEmail(authUser.email, dbUser.email);

@@ -9,9 +9,11 @@ import {
   completeLogisticsTask,
   reopenLogisticsTask,
   confirmLogisticsIntake,
+  discardLogisticsIntake,
   createMotoboy,
   deleteMotoboy,
   setMotoboyActive,
+  updateMotoboyPhone,
   applyLogisticsEdit,
   listAgendaTasks,
   listDayTasks,
@@ -35,6 +37,7 @@ function refresh() {
   revalidatePath("/dashboard/painel");
   revalidatePath("/dashboard/dentistas");
   revalidatePath("/dashboard/agenda");
+  revalidatePath("/dashboard/registros");
 }
 
 export async function previewDirectoryCommand(transcript: string) {
@@ -135,6 +138,12 @@ export async function confirmLogisticsBatch(intakeId: string, tasks: LogisticsDr
   return result;
 }
 
+export async function discardLogisticsBatch(intakeId: string) {
+  const result = await discardLogisticsIntake(intakeId);
+  if (result.ok) refresh();
+  return result;
+}
+
 export async function allocateMotoboy(taskId: string, motoboyIntraUserId: string) {
   const result = await assignTaskMotoboy(taskId, motoboyIntraUserId);
   if (result.ok) refresh();
@@ -220,8 +229,14 @@ export async function deleteMotoboyAction(id: string) {
   return result;
 }
 
-export async function createMotoboyAction(name: string) {
-  const result = await createMotoboy(name);
+export async function createMotoboyAction(name: string, phone?: string | null) {
+  const result = await createMotoboy(name, phone);
+  if (result.ok) refresh();
+  return result;
+}
+
+export async function updateMotoboyPhoneAction(id: string, phone: string) {
+  const result = await updateMotoboyPhone(id, phone);
   if (result.ok) refresh();
   return result;
 }

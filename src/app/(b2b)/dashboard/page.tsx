@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
   CalendarDays,
+  ClipboardList,
   Loader2,
   LogOut,
   Mic,
@@ -40,6 +41,12 @@ const shortcuts = [
     title: "Agenda",
     description: "Coletas e entregas da semana, no dia e no horário ouvido.",
     icon: CalendarDays,
+  },
+  {
+    href: "/dashboard/registros",
+    title: "Registros",
+    description: "Busca de coletas e entregas por dia, cliente e entregador.",
+    icon: ClipboardList,
   },
   {
     href: "/dashboard/finances",

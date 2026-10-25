@@ -72,7 +72,9 @@
   background: transparent !important;
   background-color: transparent !important;
   padding: 0 !important;
-  overflow: hidden !important;
+  overflow: visible !important;
+  min-height: 3.35rem !important;
+  border-radius: 0.5rem !important;
   max-width: 100%;
   width: 100% !important; /* tema usa calc(100% - 10px) e deixa “faixa” lateral */
 }
@@ -94,9 +96,9 @@
   box-shadow: none !important;
 }
 
-/* Wrapper do custom component Schedule-X — sem moldura extra */
-.agenda-schedule-x-root .sx__time-grid-event [data-ccid],
-.agenda-schedule-x-root .sx__time-grid-event > div {
+/* Wrapper do custom component Schedule-X — sem moldura extra. O card em si guarda o contorno. */
+.agenda-schedule-x-root .sx__time-grid-event [data-ccid]:not(.agenda-time-grid-event),
+.agenda-schedule-x-root .sx__time-grid-event > div:not(.agenda-time-grid-event) {
   border: none !important;
   outline: none !important;
   height: 100%;
@@ -104,13 +106,39 @@
   min-width: 0;
 }
 
+.agenda-schedule-x-root .sx__time-grid-event.agenda-event-open {
+  background-color: #fed7aa !important;
+}
+
+.agenda-schedule-x-root .sx__time-grid-event.agenda-event-done {
+  background-color: #bbf7d0 !important;
+}
+
+.agenda-schedule-x-root .sx__time-grid-event.agenda-event-cancelled {
+  background-color: #fecaca !important;
+}
+
 .agenda-schedule-x-root .agenda-time-grid-event {
   min-width: 0;
   max-width: 100%;
-  border: none !important;
+  height: 100%;
+  min-height: 3.35rem;
+  border: 0 !important;
+  border-radius: 0.5rem !important;
   outline: none !important;
-  /* Fundo opaco (bg-card no componente) cobre as linhas sob o card. */
   isolation: isolate;
+}
+
+.agenda-schedule-x-root .agenda-time-grid-event[data-agenda-state="open"] {
+  background-color: #fed7aa !important;
+}
+
+.agenda-schedule-x-root .agenda-time-grid-event[data-agenda-state="done"] {
+  background-color: #bbf7d0 !important;
+}
+
+.agenda-schedule-x-root .agenda-time-grid-event[data-agenda-state="cancelled"] {
+  background-color: #fecaca !important;
 }
 
 .agenda-schedule-x-root .agenda-time-grid-event p,
@@ -132,7 +160,9 @@
   border: 0 !important;
   background: transparent !important;
   box-shadow: none !important;
-  padding: 0 !important;
+  padding: 1px 2px !important;
+  border-radius: 0.5rem !important;
+  overflow: hidden !important;
 }
 
 .agenda-schedule-x-root .agenda-month-grid-event {

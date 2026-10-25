@@ -38,11 +38,12 @@ function toCalendarEvent(task: AgendaTask): AgendaCalendarAppointment {
     startAt = new Date(endAt.getTime() - 30 * 60 * 1000);
   }
   const safeEnd = endAt.getTime() > startAt.getTime() ? endAt : plusMinutes(task.targetDate, startTime, 30);
+  const done = task.status === "CONCLUIDO";
   return {
     id: task.id,
     patientId: task.id,
     patientName: `${task.type === "ENTREGA" ? "Entrega" : "Coleta"} · ${task.name}`,
-    patientAgendaColor: task.type === "ENTREGA" ? "#00008f" : "#b45309",
+    patientAgendaColor: done ? "#047857" : "#c2410c",
     professionalName:
       task.status === "EM_ROTA"
         ? `${task.motoboyName ? `Entregador ${task.motoboyName}` : "Sem entregador"} · Em rota`
@@ -60,7 +61,7 @@ function toCalendarEvent(task: AgendaTask): AgendaCalendarAppointment {
     serviceName: task.workDescription,
     professionalServiceId: null,
     hasFinanceIncome: false,
-    confirmationStatus: "CONFIRMED",
+    confirmationStatus: done ? "CONFIRMED" : "PENDING_CONFIRMATION",
     evolutionId: null,
     hasEvolution: false,
   };
@@ -145,7 +146,7 @@ export function LogisticsAgenda() {
           }}
         />
       ) : null}
-      <AgendaCalendarProvider appointments={events} canUseConfirmationColors={false}>
+      <AgendaCalendarProvider appointments={events} canUseConfirmationColors>
         <AgendaScheduleXView
           appointments={events}
           timeZone={TZ}

@@ -222,18 +222,20 @@ export function AgendaScheduleXView({
           // locale pt-BR → dicionário nativo `ptBR` (Today/View/Date já em português).
           // NÃO passar translations com chave "pt-BR": isso apaga o mapa e devolve as keys em inglês.
           calendars: {
-            appointment: {
-              colorName: "appointment",
-              lightColors: {
-                main: "#00008f",
-                container: "#e8e8f8",
-                onContainer: "#12163a",
-              },
-              darkColors: {
-                main: "#b9baff",
-                container: "#1a1a40",
-                onContainer: "#eef0ff",
-              },
+            open: {
+              colorName: "open",
+              lightColors: { main: "#c2410c", container: "#fed7aa", onContainer: "#7c2d12" },
+              darkColors: { main: "#fdba74", container: "#7c2d12", onContainer: "#ffedd5" },
+            },
+            done: {
+              colorName: "done",
+              lightColors: { main: "#047857", container: "#bbf7d0", onContainer: "#064e3b" },
+              darkColors: { main: "#6ee7b7", container: "#064e3b", onContainer: "#d1fae5" },
+            },
+            cancelled: {
+              colorName: "cancelled",
+              lightColors: { main: "#dc2626", container: "#fecaca", onContainer: "#7f1d1d" },
+              darkColors: { main: "#fca5a5", container: "#7f1d1d", onContainer: "#fee2e2" },
             },
           },
           callbacks: {

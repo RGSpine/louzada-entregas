@@ -1,17 +1,21 @@
 import "server-only";
 
-import { LogisticsTaskStatus } from "@prisma/client";
+import { LogisticsTaskStatus, Prisma } from "@prisma/client";
 
 import { interpretContactUpdates } from "@/lib/logistics/contact-update";
-import { interpretDirectorySpeech } from "@/lib/logistics/directory-speech";
+import { interpretDirectorySpeech, type SpokenCourier } from "@/lib/logistics/directory-speech";
+
+export type { SpokenCourier };
 import {
   interpretLogisticsEdits,
   transcriptHasEditCue,
   type LogisticsEditIntent,
 } from "@/lib/logistics/interpret-edit";
 import { extractLogisticsTasksWithModel } from "@/lib/logistics/extract-intake";
-import { matchDentistClient, type DentistMatchCandidate } from "@/lib/logistics/fuzzy-dentist";
+import { matchDentistClient, type DentistChoice, type DentistMatchCandidate } from "@/lib/logistics/fuzzy-dentist";
+import { personTokens, tokensClose } from "@/lib/logistics/person-name";
 import { interpretLogisticsTranscript, splitLogisticsClauses } from "@/lib/logistics/interpret-command";
+import { groundTasksOnRoster } from "@/lib/logistics/roster-ground";
 import { parseLogisticsIntake, type LogisticsTaskDraft } from "@/lib/logistics/intake-schema";
 import { matchProsthesisPrice } from "@/lib/logistics/prosthesis-price";
 import { yyyyMmDdToSaoPauloNoon } from "@/lib/finance/portuguese-payment";
@@ -31,8 +35,11 @@ export type LogisticsDraftView = LogisticsTaskDraft & {
   createClient: boolean | null;
   createCourier: boolean | null;
   courierKnown: boolean;
+  /** Entregador escolhido na lista. Vazio quando há homônimos e ninguém foi escolhido. */
+  motoboyIntraUserId: string | null;
   addressInput: string;
   phoneInput: string;
+  clientChoices: DentistChoice[];
 };
 
 export type DayTaskView = {
@@ -47,6 +54,8 @@ export type DayTaskView = {
   timeWindowEnd: string | null;
   motoboyIntraUserId: string | null;
   motoboyName: string | null;
+  motoboyPhone: string | null;
+  clientPhone: string | null;
   createdByName: string | null;
 };
 
@@ -79,33 +88,75 @@ async function dentistCandidates(userId: string): Promise<DentistMatchCandidate[
   });
 }
 
-type DraftInput = LogisticsTaskDraft & Partial<Pick<LogisticsDraftView, "createClient" | "createCourier" | "addressInput" | "phoneInput">>;
+type DraftInput = LogisticsTaskDraft &
+  Partial<
+    Pick<
+      LogisticsDraftView,
+      "createClient" | "createCourier" | "addressInput" | "phoneInput" | "dentistClientId" | "motoboyIntraUserId"
+    >
+  >;
 
-function knownCourier(heard: string, couriers: Array<{ name: string }>): boolean {
-  const key = heard.trim().toLocaleLowerCase("pt-BR");
-  if (!key) return false;
-  if (couriers.some((courier) => courier.name.trim().toLocaleLowerCase("pt-BR") === key)) return true;
-  const byFirstName = couriers.filter((courier) => courier.name.trim().toLocaleLowerCase("pt-BR").split(/\s+/)[0] === key);
-  return byFirstName.length === 1;
+type CourierRow = { id: string; name: string };
+
+function courierMatches(heard: string | null, couriers: CourierRow[]): CourierRow[] {
+  const key = heard?.trim().toLocaleLowerCase("pt-BR") ?? "";
+  if (!key) return [];
+  const exact = couriers.filter((courier) => courier.name.trim().toLocaleLowerCase("pt-BR") === key);
+  if (exact.length > 0) return exact;
+  const first = key.split(/\s+/)[0] ?? "";
+  return couriers.filter((courier) => courier.name.trim().toLocaleLowerCase("pt-BR").split(/\s+/)[0] === first);
+}
+
+function heardFits(clientName: string | null, candidate: DentistMatchCandidate): boolean {
+  const heard = personTokens(clientName ?? "");
+  if (heard.length === 0) return false;
+  const known = personTokens([candidate.name, candidate.clinicName ?? "", ...candidate.aliases].join(" "));
+  return heard.every((token) => known.some((part) => tokensClose(token, part)));
 }
 
 function toDraftView(
   task: DraftInput,
   candidates: DentistMatchCandidate[],
-  couriers: Array<{ name: string }>,
+  couriers: CourierRow[],
 ): LogisticsDraftView {
-  const match = matchDentistClient(task.clientName, candidates);
+  const chosen = task.dentistClientId
+    ? candidates.find((candidate) => candidate.id === task.dentistClientId && heardFits(task.clientName, candidate))
+    : undefined;
+  const match = chosen
+    ? {
+        dentistClientId: chosen.id,
+        matchedName: chosen.name,
+        address: chosen.address,
+        rawClientName: task.clientName?.trim() || chosen.name,
+        clientChoices: [],
+      }
+    : matchDentistClient(task.clientName, candidates);
   const rawClientName = match.rawClientName || task.clientName || "";
-  const courierKnown = task.courierName ? knownCourier(task.courierName, couriers) : false;
+  const matches = courierMatches(task.courierName, couriers);
+  const picked = task.motoboyIntraUserId
+    ? couriers.find((courier) => courier.id === task.motoboyIntraUserId) ?? null
+    : null;
+  const motoboyIntraUserId = picked?.id ?? (matches.length === 1 ? matches[0]?.id ?? null : null);
+  const courierKnown = Boolean(motoboyIntraUserId);
+  const ambiguousCourier = Boolean(task.courierName?.trim()) && !motoboyIntraUserId && matches.length > 1;
   const registered = candidates.find((candidate) => candidate.id === match.dentistClientId);
+  const pendingChoice = !match.dentistClientId && match.clientChoices.length > 0;
   return {
     ...task,
     ...match,
     phone: registered?.phone ?? null,
     rawClientName,
+    courierName: picked?.name ?? task.courierName,
     courierKnown,
-    createClient: match.dentistClientId || !rawClientName.trim() ? false : task.createClient ?? null,
-    createCourier: !task.courierName?.trim() || courierKnown ? false : task.createCourier ?? null,
+    motoboyIntraUserId,
+    createClient: match.dentistClientId || !rawClientName.trim()
+      ? false
+      : pendingChoice
+        ? task.createClient === true
+          ? true
+          : null
+        : task.createClient ?? null,
+    createCourier: !task.courierName?.trim() || courierKnown || ambiguousCourier ? false : task.createCourier ?? null,
     addressInput: task.addressInput ?? "",
     phoneInput: task.phoneInput ?? "",
   };
@@ -152,8 +203,10 @@ export async function matchDraftIdentity(input: {
       address: view.address,
       phone: view.phone,
       courierKnown: view.courierKnown,
+      motoboyIntraUserId: view.motoboyIntraUserId,
       createClient: view.createClient,
       createCourier: view.createCourier,
+      clientChoices: view.clientChoices,
     },
   };
 }
@@ -167,7 +220,7 @@ export async function draftsFromTranscript(transcript: string, now = new Date())
 async function courierNames(userId: string) {
   return prisma.intraUser.findMany({
     where: { userId, isMotoboy: true, active: true },
-    select: { name: true },
+    select: { id: true, name: true },
   });
 }
 
@@ -195,12 +248,14 @@ export type LogisticsEditPatch = {
   targetDate: string | null;
   timeWindowStart: string | null;
   timeWindowEnd: string | null;
+  status: "CONCLUIDO" | "CANCELADO" | null;
 };
 
 export type LogisticsEditProposal = {
   taskId: string;
   label: string;
   change: string;
+  targetDate: string | null;
   patch: LogisticsEditPatch;
 };
 
@@ -224,6 +279,8 @@ function describeEdit(intent: LogisticsEditIntent): string {
   if (intent.timeWindowStart && intent.timeWindowEnd) parts.push(`${intent.timeWindowStart}–${intent.timeWindowEnd}`);
   else if (intent.timeWindowEnd) parts.push(`até ${intent.timeWindowEnd}`);
   else if (intent.timeWindowStart) parts.push(`a partir de ${intent.timeWindowStart}`);
+  if (intent.status === "CONCLUIDO") parts.push("marcar como realizada");
+  if (intent.status === "CANCELADO") parts.push("cancelar a marcação");
   return parts.join(", ");
 }
 
@@ -240,6 +297,7 @@ async function findTasksForEdit(userId: string, intent: LogisticsEditIntent) {
   });
   const named = rows.filter((row) => namesHit(intent.matchClientName, [row.rawClientName, row.dentistClient?.name]));
   const open = named.filter((row) => row.status === "PENDENTE" || row.status === "EM_ROTA");
+  if (intent.status) return open.slice(0, 8);
   return (open.length > 0 ? open : named).slice(0, 8);
 }
 
@@ -260,15 +318,23 @@ export async function resolveLogisticsEdits(transcript: string, userId: string, 
     const found = await findTasksForEdit(userId, intent);
     const kind = intent.matchType === "ENTREGA" ? "entrega" : intent.matchType === "COLETA" ? "coleta" : "marcação";
     if (found.length === 0) {
-      return { handled: true as const, ok: false as const, error: `Não encontrei a ${kind} de ${intent.matchClientName}.` };
+      const closed = intent.status
+        ? " em aberto"
+        : "";
+      return {
+        handled: true as const,
+        ok: false as const,
+        error: `Não encontrei a ${kind}${closed} de ${intent.matchClientName}.`,
+      };
     }
     for (const task of found) {
-      const date = task.targetDate ? calendarDate(task.targetDate) : "sem data";
+      const date = task.targetDate ? calendarDate(task.targetDate) : null;
       const clock = task.timeWindowEnd ? `até ${task.timeWindowEnd}` : "sem horário";
       edits.push({
         taskId: task.id,
-        label: `${task.type} · ${task.dentistClient?.name ?? task.rawClientName} · ${date.split("-").reverse().join("/")} · ${clock} · ${task.motoboy?.name ?? "sem entregador"}`,
+        label: `${task.type} · ${task.dentistClient?.name ?? task.rawClientName} · ${date ? date.split("-").reverse().join("/") : "sem data"} · ${clock} · ${task.motoboy?.name ?? "sem entregador"}`,
         change: describeEdit(intent),
+        targetDate: date,
         patch: {
           type: intent.type,
           clientName: intent.clientName,
@@ -277,6 +343,7 @@ export async function resolveLogisticsEdits(transcript: string, userId: string, 
           targetDate: intent.targetDate,
           timeWindowStart: intent.timeWindowStart,
           timeWindowEnd: intent.timeWindowEnd,
+          status: intent.status,
         },
       });
     }
@@ -329,9 +396,17 @@ export async function saveLogisticsDraft(transcript: string, now = new Date()) {
     };
   }
   const updates = interpretContactUpdates(transcript);
-  const tasks = await draftsFromTranscript(transcript, now);
-  const candidates = await dentistCandidates(userId);
-  const couriers = await courierNames(userId);
+  const [heardTasks, candidates, couriers] = await Promise.all([
+    draftsFromTranscript(transcript, now),
+    dentistCandidates(userId),
+    courierNames(userId),
+  ]);
+  const tasks = groundTasksOnRoster(
+    transcript,
+    heardTasks,
+    candidates.map((candidate) => ({ name: candidate.name, aliases: candidate.aliases })),
+    couriers.map((courier) => ({ name: courier.name })),
+  );
   const parsed = tasks.length > 0 ? parseLogisticsIntake({ tasks }) : null;
   if (parsed && !parsed.ok) return { ok: false as const, error: parsed.error };
   const views = parsed?.ok ? parsed.data.tasks.map((task) => toDraftView(task, candidates, couriers)) : [];
@@ -414,10 +489,13 @@ export async function previewDirectorySpeech(transcript: string) {
   }
   const { userId } = tenant;
   const candidates = await dentistCandidates(userId);
-  const couriers = await courierNames(userId);
   const notes: string[] = [];
   const pendingClients: SpokenClientDraft[] = [];
-  const pendingCouriers: string[] = [];
+  const pendingCouriers: SpokenCourier[] = [];
+  const roster = await prisma.intraUser.findMany({
+    where: { userId, isMotoboy: true },
+    select: { id: true, name: true },
+  });
 
   for (const client of heard.clients) {
     const match = matchDentistClient(client.clientName, candidates);
@@ -437,9 +515,24 @@ export async function previewDirectorySpeech(transcript: string) {
     }
   }
 
-  for (const name of heard.couriers) {
-    if (knownCourier(name, couriers)) notes.push(`${name} já está no cadastro de entregadores.`);
-    else pendingCouriers.push(name);
+  for (const courier of heard.couriers) {
+    const key = personKey(courier.name);
+    const exact = roster.find((row) => personKey(row.name) === key);
+    const byFirst = roster.filter((row) => personKey(row.name).split(" ")[0] === key);
+    const match = exact ?? (byFirst.length === 1 ? byFirst[0] : null);
+    if (!match) {
+      pendingCouriers.push(courier);
+      continue;
+    }
+    if (courier.phone) {
+      await prisma.intraUser.updateMany({
+        where: { id: match.id, userId, isMotoboy: true },
+        data: { phone: courier.phone },
+      });
+      notes.push(`Telefone de ${match.name} atualizado.`);
+    } else {
+      notes.push(`${match.name} já está no cadastro de entregadores.`);
+    }
   }
 
   return { ok: true as const, transcript: transcript.trim(), notes, pendingClients, pendingCouriers };
@@ -477,6 +570,13 @@ export async function confirmLogisticsIntake(intakeId: string, tasks: LogisticsD
   if (ready.length === 0) {
     return { ok: false as const, error: "Cada ordem precisa de coleta ou entrega e do nome citado." };
   }
+  const needsChoice = ready.find((task) => !task.dentistClientId && task.clientChoices.length > 0 && task.createClient !== true);
+  if (needsChoice) {
+    return {
+      ok: false as const,
+      error: `Há mais de um profissional parecido com ${needsChoice.rawClientName}. Escolha qual é na lista.`,
+    };
+  }
   const pendingClient = ready.find((task) => task.createClient == null);
   if (pendingClient) {
     return {
@@ -491,8 +591,22 @@ export async function confirmLogisticsIntake(intakeId: string, tasks: LogisticsD
       error: `Não identifiquei o entregador ${pendingCourier.courierName}. Responda se posso cadastrá-lo.`,
     };
   }
+  const ambiguousCourier = ready.find(
+    (task) =>
+      Boolean(task.courierName?.trim()) &&
+      !task.motoboyIntraUserId &&
+      courierMatches(task.courierName, couriers).length > 1,
+  );
+  if (ambiguousCourier) {
+    return {
+      ok: false as const,
+      error: `Há mais de um entregador chamado ${ambiguousCourier.courierName}. Escolha qual é na lista.`,
+    };
+  }
 
-  const financeCount = await prisma.$transaction(async (tx) => {
+  let financeCount = 0;
+  try {
+    financeCount = await prisma.$transaction(async (tx) => {
     const createdByName = new Map<string, string>();
     for (const task of ready) {
       if (task.dentistClientId || !task.rawClientName.trim() || task.createClient !== true) continue;
@@ -583,8 +697,8 @@ export async function confirmLogisticsIntake(intakeId: string, tasks: LogisticsD
           type: task.type,
           dentistClientId: task.dentistClientId,
           rawClientName: task.rawClientName,
-          motoboyIntraUserId: task.courierName ? courierIdFor(task.courierName) : null,
-          status: task.courierName && courierIdFor(task.courierName) ? LogisticsTaskStatus.EM_ROTA : LogisticsTaskStatus.PENDENTE,
+          motoboyIntraUserId: task.motoboyIntraUserId ?? (task.courierName ? courierIdFor(task.courierName) : null),
+          status: LogisticsTaskStatus.PENDENTE,
           workDescription: task.workDescription,
           targetDate: task.targetDate ? new Date(`${task.targetDate}T00:00:00.000Z`) : null,
           timeWindowStart: task.timeWindowStart,
@@ -615,8 +729,45 @@ export async function confirmLogisticsIntake(intakeId: string, tasks: LogisticsD
       data: { status: "CONFIRMED", tasksJson: ready },
     });
     return posted;
+    }, { maxWait: 60_000, timeout: 20_000 });
+  } catch (error) {
+    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2028") {
+      return {
+        ok: false as const,
+        error: "A conexão com o banco demorou e a confirmação não gravou. Tente confirmar de novo.",
+      };
+    }
+    throw error;
+  }
+  const dates = [...new Set(ready.map((task) => task.targetDate).filter((value): value is string => Boolean(value)))].sort();
+  return { ok: true as const, count: ready.length, financeCount, targetDate: dates[0] ?? null };
+}
+
+export async function discardLogisticsIntake(intakeId: string) {
+  const tenant = await requireTenantId();
+  if (!tenant) return { ok: false as const, error: "Sessão expirada. Entre de novo." };
+  const removed = await prisma.logisticsIntake.deleteMany({
+    where: { id: intakeId, userId: tenant.userId, status: "DRAFT" },
   });
-  return { ok: true as const, count: ready.length, financeCount };
+  if (removed.count === 0) return { ok: false as const, error: "Lote não encontrado ou já confirmado." };
+  return { ok: true as const };
+}
+
+export async function listOpenTaskDates(exceptDate: string): Promise<string[]> {
+  const tenant = await requireTenantId();
+  if (!tenant) return [];
+  const rows = await prisma.logisticsTask.findMany({
+    where: {
+      userId: tenant.userId,
+      status: { in: [LogisticsTaskStatus.PENDENTE, LogisticsTaskStatus.EM_ROTA] },
+      targetDate: { not: new Date(`${exceptDate}T00:00:00.000Z`) },
+    },
+    select: { targetDate: true },
+    distinct: ["targetDate"],
+    orderBy: { targetDate: "asc" },
+    take: 8,
+  });
+  return rows.flatMap((row) => (row.targetDate ? [calendarDate(row.targetDate)] : []));
 }
 
 export async function listDayTasks(date: string): Promise<DayTaskView[]> {
@@ -626,8 +777,8 @@ export async function listDayTasks(date: string): Promise<DayTaskView[]> {
   const rows = await prisma.logisticsTask.findMany({
     where: { userId, targetDate: new Date(`${date}T00:00:00.000Z`) },
     include: {
-      dentistClient: { select: { name: true, address: true } },
-      motoboy: { select: { name: true } },
+      dentistClient: { select: { name: true, address: true, phone: true } },
+      motoboy: { select: { name: true, phone: true } },
       intake: { select: { createdBy: { select: { name: true } } } },
     },
     orderBy: [{ timeWindowEnd: "asc" }, { createdAt: "asc" }],
@@ -644,7 +795,81 @@ export async function listDayTasks(date: string): Promise<DayTaskView[]> {
     timeWindowEnd: row.timeWindowEnd,
     motoboyIntraUserId: row.motoboyIntraUserId,
     motoboyName: row.motoboy?.name ?? null,
+    motoboyPhone: row.motoboy?.phone ?? null,
+    clientPhone: row.dentistClient?.phone ?? null,
     createdByName: row.intake.createdBy?.name ?? null,
+  }));
+}
+
+export type LogisticsRecordFilters = {
+  query: string;
+  date: string | null;
+  type: "ENTREGA" | "COLETA" | null;
+  dentistClientId: string | null;
+  motoboyIntraUserId: string | null;
+};
+
+export type LogisticsRecordRow = {
+  id: string;
+  type: "ENTREGA" | "COLETA";
+  status: LogisticsTaskStatus;
+  targetDate: string | null;
+  timeWindowStart: string | null;
+  timeWindowEnd: string | null;
+  clientName: string;
+  clientPhone: string | null;
+  courierName: string | null;
+  courierPhone: string | null;
+  createdByName: string | null;
+  workDescription: string | null;
+};
+
+export async function listLogisticsRecords(filters: LogisticsRecordFilters): Promise<LogisticsRecordRow[]> {
+  const tenant = await requireTenantId();
+  if (!tenant) return [];
+  const { userId } = tenant;
+  const term = filters.query.trim();
+  const rows = await prisma.logisticsTask.findMany({
+    where: {
+      userId,
+      status: LogisticsTaskStatus.CONCLUIDO,
+      ...(filters.date ? { targetDate: new Date(`${filters.date}T00:00:00.000Z`) } : {}),
+      ...(filters.type ? { type: filters.type } : {}),
+      ...(filters.dentistClientId ? { dentistClientId: filters.dentistClientId } : {}),
+      ...(filters.motoboyIntraUserId ? { motoboyIntraUserId: filters.motoboyIntraUserId } : {}),
+      ...(term
+        ? {
+            OR: [
+              { rawClientName: { contains: term, mode: "insensitive" } },
+              { workDescription: { contains: term, mode: "insensitive" } },
+              { dentistClient: { name: { contains: term, mode: "insensitive" } } },
+              { dentistClient: { clinicName: { contains: term, mode: "insensitive" } } },
+              { motoboy: { name: { contains: term, mode: "insensitive" } } },
+            ],
+          }
+        : {}),
+    },
+    include: {
+      dentistClient: { select: { name: true, phone: true } },
+      motoboy: { select: { name: true, phone: true } },
+      intake: { select: { createdBy: { select: { name: true } } } },
+    },
+    orderBy: [{ targetDate: "desc" }, { timeWindowEnd: "asc" }],
+    take: 400,
+  });
+  return rows.map((row) => ({
+    id: row.id,
+    type: row.type,
+    status: row.status,
+    targetDate: row.targetDate ? calendarDate(row.targetDate) : null,
+    timeWindowStart: row.timeWindowStart,
+    timeWindowEnd: row.timeWindowEnd,
+    clientName: row.dentistClient?.name ?? row.rawClientName,
+    clientPhone: row.dentistClient?.phone ?? null,
+    courierName: row.motoboy?.name ?? null,
+    courierPhone: row.motoboy?.phone ?? null,
+    createdByName: row.intake.createdBy?.name ?? null,
+    workDescription: row.workDescription,
   }));
 }
 
@@ -740,9 +965,9 @@ function cleanClock(value: string | null | undefined): string | null {
   return CLOCK.test(clock) ? clock : null;
 }
 
-function statusAfterCourier(current: LogisticsTaskStatus, motoboyId: string | null, changed: boolean): LogisticsTaskStatus {
+function statusAfterCourier(current: LogisticsTaskStatus, _motoboyId: string | null, changed: boolean): LogisticsTaskStatus {
   if (!changed || current === "CONCLUIDO" || current === "CANCELADO") return current;
-  return motoboyId ? "EM_ROTA" : "PENDENTE";
+  return "PENDENTE";
 }
 
 async function courierByName(userId: string, heard: string) {
@@ -957,7 +1182,11 @@ export async function applyLogisticsEdit(input: {
     return { ok: false as const, error: "O horário inicial precisa ser antes do limite.", askClient: false as const, askCourier: false as const };
   }
   const updated = await prisma.logisticsTask.updateMany({
-    where: { id: task.id, userId: tenant.userId },
+    where: {
+      id: task.id,
+      userId: tenant.userId,
+      ...(patch.status ? { status: { in: [LogisticsTaskStatus.PENDENTE, LogisticsTaskStatus.EM_ROTA] } } : {}),
+    },
     data: {
       ...(patch.type ? { type: patch.type } : {}),
       dentistClientId,
@@ -966,7 +1195,8 @@ export async function applyLogisticsEdit(input: {
       timeWindowStart: timeWindowStart && timeWindowEnd && timeWindowStart > timeWindowEnd ? null : timeWindowStart,
       timeWindowEnd,
       motoboyIntraUserId,
-      status: statusAfterCourier(task.status, motoboyIntraUserId, courierChanged),
+      status: patch.status ?? statusAfterCourier(task.status, motoboyIntraUserId, courierChanged),
+      ...(patch.status === "CONCLUIDO" ? { completedAt: new Date() } : {}),
     },
   });
   return updated.count === 1
@@ -1005,7 +1235,6 @@ export async function assignTaskMotoboy(taskId: string, motoboyIntraUserId: stri
     where: { id: taskId, userId },
     data: {
       motoboyIntraUserId,
-      status: motoboyIntraUserId ? LogisticsTaskStatus.EM_ROTA : LogisticsTaskStatus.PENDENTE,
     },
   });
   return updated.count === 1
@@ -1063,7 +1292,7 @@ export async function reopenLogisticsTask(taskId: string) {
   const updated = await prisma.logisticsTask.updateMany({
     where: { id: taskId, userId },
     data: {
-      status: current.motoboyIntraUserId ? LogisticsTaskStatus.EM_ROTA : LogisticsTaskStatus.PENDENTE,
+      status: LogisticsTaskStatus.PENDENTE,
       completedAt: null,
     },
   });
@@ -1078,27 +1307,28 @@ export async function listMotoboys() {
   const { userId } = tenant;
   return prisma.intraUser.findMany({
     where: { userId, isMotoboy: true },
-    select: { id: true, name: true, active: true },
+    select: { id: true, name: true, active: true, phone: true },
     orderBy: [{ active: "desc" }, { name: "asc" }],
   });
 }
 
-export async function createMotoboy(name: string) {
+export async function createMotoboy(name: string, phone?: string | null) {
   const tenant = await requireTenantId();
   if (!tenant) return { ok: false as const, error: "Sessão expirada. Entre de novo." };
   const { userId } = tenant;
   const clean = name.trim().slice(0, 80);
+  const cleanPhone = phone?.trim().slice(0, 40) || null;
   if (!clean) return { ok: false as const, error: "Diga o nome do entregador." };
   const existing = await prisma.intraUser.findMany({
     where: { userId, isMotoboy: true },
     select: { id: true, name: true, active: true },
   });
   const match = existing.find((courier) => personKey(courier.name) === personKey(clean));
-  if (match?.active) return { ok: false as const, error: `${match.name} já está no cadastro de entregadores.` };
+  if (match?.active && !cleanPhone) return { ok: false as const, error: `${match.name} já está no cadastro de entregadores.` };
   if (match) {
     const motoboy = await prisma.intraUser.update({
       where: { id: match.id },
-      data: { active: true },
+      data: { active: true, ...(cleanPhone ? { phone: cleanPhone } : {}) },
       select: { id: true, name: true },
     });
     return { ok: true as const, motoboy };
@@ -1107,6 +1337,7 @@ export async function createMotoboy(name: string) {
     data: {
       userId,
       name: clean,
+      phone: cleanPhone,
       role: "MEMBER",
       isOwner: false,
       isMotoboy: true,
@@ -1116,6 +1347,20 @@ export async function createMotoboy(name: string) {
     select: { id: true, name: true },
   });
   return { ok: true as const, motoboy };
+}
+
+export async function updateMotoboyPhone(id: string, phone: string) {
+  const tenant = await requireTenantId();
+  if (!tenant) return { ok: false as const, error: "Sessão expirada. Entre de novo." };
+  const clean = phone.trim().slice(0, 40);
+  if (clean.replace(/\D/g, "").length < 8) return { ok: false as const, error: "Informe o telefone do entregador." };
+  const updated = await prisma.intraUser.updateMany({
+    where: { id, userId: tenant.userId, isMotoboy: true },
+    data: { phone: clean },
+  });
+  return updated.count === 1
+    ? { ok: true as const }
+    : { ok: false as const, error: "Entregador não encontrado." };
 }
 
 export async function setMotoboyActive(id: string, active: boolean) {

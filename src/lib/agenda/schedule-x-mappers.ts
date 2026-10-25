@@ -47,10 +47,17 @@ export function appointmentToCalendarEvent(
     title: `${timeLabel} · ${appointment.patientName}`,
     start: luxonToZonedDateTime(start, timeZone),
     end: luxonToZonedDateTime(end, timeZone),
-    calendarId: "appointment",
+    calendarId: appointment.status === "COMPLETED" ? "done" : appointment.status === "CANCELLED" || appointment.status === "NO_SHOW" ? "cancelled" : "open",
     _options: {
       disableDND: appointment.status === "CANCELLED" || appointment.status === "NO_SHOW",
       disableResize: appointment.status === "CANCELLED" || appointment.status === "NO_SHOW" || appointment.status === "COMPLETED",
+      additionalClasses: [
+        appointment.status === "COMPLETED"
+          ? "agenda-event-done"
+          : appointment.status === "CANCELLED" || appointment.status === "NO_SHOW"
+            ? "agenda-event-cancelled"
+            : "agenda-event-open",
+      ],
     },
     _patientAgendaColor: appointment.patientAgendaColor,
     _professionalColor: appointment.professionalColor ?? undefined,

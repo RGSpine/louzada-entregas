@@ -1,10 +1,11 @@
 import "server-only";
 
+import { cache } from "react";
 import { cookies } from "next/headers";
 import { Prisma } from "@prisma/client";
 
+import { getRequestAuthUser, getRequestDbUser } from "@/lib/auth/request-user";
 import { prisma } from "@/lib/prisma";
-import { createSupabaseServerClient } from "@/lib/supabase-server";
 import { normalizePlanTier, type PlanTier } from "@/lib/plan-tier";
 import {
   DEFAULT_INTRA_USER_COLOR,
@@ -62,18 +63,11 @@ function toActive(row: {
 }
 
 /** Resolve o Tenant (User pagante) da sessão Supabase atual. */
-export async function resolveTenant(): Promise<Tenant | null> {
-  const supabase = await createSupabaseServerClient();
-  const {
-    data: { user: authUser },
-    error,
-  } = await supabase.auth.getUser();
-  if (error || !authUser) return null;
+export const resolveTenant = cache(async (): Promise<Tenant | null> => {
+  const authUser = await getRequestAuthUser();
+  if (!authUser) return null;
 
-  const dbUser = await prisma.user.findFirst({
-    where: { OR: [{ authUserId: authUser.id }, { email: authUser.email ?? "" }] },
-    select: { id: true, name: true, email: true, plan: true, teamSetupCompletedAt: true },
-  });
+  const dbUser = await getRequestDbUser();
   if (!dbUser) return null;
 
   return {
@@ -83,7 +77,7 @@ export async function resolveTenant(): Promise<Tenant | null> {
     tier: normalizePlanTier(dbUser.plan),
     teamSetupCompleted: dbUser.teamSetupCompletedAt != null,
   };
-}
+});
 
 /**
  * Garante que o Tenant tem um Intra User dono (ADMIN). Cria de forma lazy para
@@ -130,7 +124,7 @@ export async function ensureOwnerIntraUser(
  * Contexto completo de Intra User para a sessão atual (Tenant + perfil ativo).
  * Retorna null se não autenticado.
  */
-export async function getIntraUserContext(): Promise<IntraUserContext | null> {
+export const getIntraUserContext = cache(async (): Promise<IntraUserContext | null> => {
   const tenant = await resolveTenant();
   if (!tenant) return null;
 
@@ -186,4 +180,4 @@ export async function getIntraUserContext(): Promise<IntraUserContext | null> {
     requiresProfileSelection,
     teamSetupCompleted: tenant.teamSetupCompleted,
   };
-}
+});

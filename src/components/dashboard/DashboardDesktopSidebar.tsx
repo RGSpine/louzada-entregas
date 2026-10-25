@@ -126,6 +126,7 @@ export function DashboardDesktopSidebar({
               <Item key={page.href} {...itemProps}>
                 <Link
                   href={page.href}
+                  prefetch={false}
                   onClick={isOverlay ? onClose : undefined}
                   className={cn(
                     "flex min-h-[2.75rem] items-center gap-3 rounded-lg px-3 py-2.5 text-sm transition-colors",

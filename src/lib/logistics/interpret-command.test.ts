@@ -16,6 +16,10 @@ describe("contexto temporal do comando", () => {
     assert.equal(resolveLogisticsTime("cinco horas da tarde"), "17:00");
     assert.equal(resolveLogisticsTime("seis da tarde"), "18:00");
     assert.equal(resolveLogisticsTime("meio-dia"), "12:00");
+    assert.equal(resolveLogisticsTime("dezessete horas"), "17:00");
+    assert.equal(resolveLogisticsTime("às dezessete horas"), "17:00");
+    assert.equal(resolveLogisticsTime("dezessete horas da tarde"), "17:00");
+    assert.equal(resolveLogisticsTime("17h"), "17:00");
   });
 
   it("separa coleta e entrega e amarra cada uma à data e à hora", () => {
@@ -73,6 +77,118 @@ describe("contexto temporal do comando", () => {
     assert.equal(tasks[0]?.amountCents, 80000);
     assert.equal(tasks[0]?.paymentMethod, "PIX");
   });
+
+  it("ouve dezessete horas como 17:00 e não abre outra ordem em vai entregar", () => {
+    const tasks = interpretLogisticsTranscript(
+      "Amanhã entrega às dezessete horas, o entregador Paulo vai entregar.",
+      NOW,
+    );
+    assert.equal(tasks.length, 1);
+    assert.equal(tasks[0]?.type, "ENTREGA");
+    assert.equal(tasks[0]?.courierName, "Paulo");
+    assert.equal(tasks[0]?.targetDate, "2026-10-25");
+    assert.equal(tasks[0]?.timeWindowEnd, "17:00");
+    assert.equal(tasks[0]?.clientName, null);
+  });
+
+  it("ouve doutora Adriana depois do horário e do entregador", () => {
+    const tasks = interpretLogisticsTranscript(
+      "Entrega para amanhã até às cinco da tarde, o entregador Rafael para a doutora Adriana.",
+      NOW,
+    );
+    assert.equal(tasks.length, 1);
+    assert.equal(tasks[0]?.type, "ENTREGA");
+    assert.equal(tasks[0]?.clientName, "Adriana");
+    assert.equal(tasks[0]?.courierName, "Rafael");
+    assert.equal(tasks[0]?.targetDate, "2026-10-25");
+    assert.equal(tasks[0]?.timeWindowEnd, "17:00");
+  });
+
+  it("tira o prefixo dentista e profissional e guarda o sobrenome", () => {
+    const dentista = interpretLogisticsTranscript("Amanhã entregar na dentista Ana Souza até às cinco da tarde.", NOW);
+    assert.equal(dentista[0]?.clientName, "Ana Souza");
+    assert.equal(dentista[0]?.timeWindowEnd, "17:00");
+    const profissional = interpretLogisticsTranscript("Coletar amanhã no profissional Paulo Lima.", NOW);
+    assert.equal(profissional[0]?.clientName, "Paulo Lima");
+    assert.equal(profissional[0]?.targetDate, "2026-10-25");
+  });
+
+  it("separa profissional e entregador em qualquer ordem", () => {
+    const professionalFirst = interpretLogisticsTranscript(
+      "Entrega amanhã até às cinco da tarde para a doutora Adriana, quem fará a entrega é o Rafael.",
+      NOW,
+    );
+    assert.equal(professionalFirst.length, 1);
+    assert.equal(professionalFirst[0]?.clientName, "Adriana");
+    assert.equal(professionalFirst[0]?.courierName, "Rafael");
+    assert.equal(professionalFirst[0]?.targetDate, "2026-10-25");
+    assert.equal(professionalFirst[0]?.timeWindowEnd, "17:00");
+
+    const courierFirst = interpretLogisticsTranscript(
+      "Quem fará a entrega é o Rafael, entrega amanhã até às cinco da tarde para a doutora Adriana.",
+      NOW,
+    );
+    assert.equal(courierFirst.length, 1);
+    assert.equal(courierFirst[0]?.clientName, "Adriana");
+    assert.equal(courierFirst[0]?.courierName, "Rafael");
+    assert.equal(courierFirst[0]?.timeWindowEnd, "17:00");
+
+    const namedCourier = interpretLogisticsTranscript(
+      "Entrega para a doutora Adriana amanhã até às cinco da tarde, o Rafael é quem vai entregar.",
+      NOW,
+    );
+    assert.equal(namedCourier.length, 1);
+    assert.equal(namedCourier[0]?.clientName, "Adriana");
+    assert.equal(namedCourier[0]?.courierName, "Rafael");
+    assert.equal(namedCourier[0]?.timeWindowEnd, "17:00");
+
+    const withoutPara = interpretLogisticsTranscript(
+      "Entrega amanhã até às cinco da tarde, a doutora Adriana, quem fará a entrega é o Rafael.",
+      NOW,
+    );
+    assert.equal(withoutPara[0]?.clientName, "Adriana");
+    assert.equal(withoutPara[0]?.courierName, "Rafael");
+  });
+
+  it("mantém uma ordem quando o entregador irá entregar para o cliente", () => {
+    const tasks = interpretLogisticsTranscript(
+      "fazer uma entrega para amanhã às 17 horas do que o entregador Paulo irá entregar para o cliente Doutor Rodrigo.",
+      NOW,
+    );
+    assert.equal(tasks.length, 1);
+    assert.equal(tasks[0]?.type, "ENTREGA");
+    assert.equal(tasks[0]?.clientName, "Rodrigo");
+    assert.equal(tasks[0]?.courierName, "Paulo");
+    assert.equal(tasks[0]?.targetDate, "2026-10-25");
+    assert.equal(tasks[0]?.timeWindowEnd, "17:00");
+  });
+
+  it("ouve quem fará é o entregador mesmo sem repetir a palavra entrega", () => {
+    const tasks = interpretLogisticsTranscript(
+      "Entrega para amanhã até às 5 da tarde para o Doutor Adriana. Quem fará é o Rafael.",
+      NOW,
+    );
+    assert.equal(tasks.length, 1);
+    assert.equal(tasks[0]?.type, "ENTREGA");
+    assert.equal(tasks[0]?.clientName, "Adriana");
+    assert.equal(tasks[0]?.courierName, "Rafael");
+    assert.equal(tasks[0]?.targetDate, "2026-10-25");
+    assert.equal(tasks[0]?.timeWindowEnd, "17:00");
+  });
+
+  it("separa duas ordens quando a segunda tem o próprio cliente e horário", () => {
+    const tasks = interpretLogisticsTranscript(
+      "Coletar no Marcelo até às cinco da tarde e entregar no Paulo até às seis da tarde",
+      NOW,
+    );
+    assert.equal(tasks.length, 2);
+    assert.equal(tasks[0]?.type, "COLETA");
+    assert.equal(tasks[0]?.clientName, "Marcelo");
+    assert.equal(tasks[0]?.timeWindowEnd, "17:00");
+    assert.equal(tasks[1]?.type, "ENTREGA");
+    assert.equal(tasks[1]?.clientName, "Paulo");
+    assert.equal(tasks[1]?.timeWindowEnd, "18:00");
+  });
 });
 
 describe("fuzzy match do dentista", () => {
@@ -93,5 +209,30 @@ describe("fuzzy match do dentista", () => {
     const miss = matchDentistClient("Celso Parcellini", candidates);
     assert.equal(miss.dentistClientId, null);
     assert.equal(miss.rawClientName, "Celso Parcellini");
+    assert.equal(miss.clientChoices.length, 0);
+  });
+
+  it("vincula o primeiro nome quando só existe uma Adriana e pede o sobrenome quando há outra", () => {
+    const only = [
+      { id: "a1", name: "Adriana Costa", clinicName: "Centro", address: "Rua 1", phone: "11999990000", aliases: [] },
+    ];
+    const hit = matchDentistClient("doutora Adriana", only);
+    assert.equal(hit.dentistClientId, "a1");
+    assert.equal(hit.matchedName, "Adriana Costa");
+
+    const repeated = [
+      ...only,
+      { id: "a2", name: "Adriana Souza", clinicName: null, address: "Rua 2", aliases: ["Dra Adriana"] },
+    ];
+    const ambiguous = matchDentistClient("Adriana", repeated);
+    assert.equal(ambiguous.dentistClientId, null);
+    assert.deepEqual(
+      ambiguous.clientChoices.map((choice) => choice.name),
+      ["Adriana Costa", "Adriana Souza"],
+    );
+    const bySurname = matchDentistClient("doutora Adriana Souza", repeated);
+    assert.equal(bySurname.dentistClientId, "a2");
+    const near = matchDentistClient("Adrianda", only);
+    assert.equal(near.dentistClientId, "a1");
   });
 });

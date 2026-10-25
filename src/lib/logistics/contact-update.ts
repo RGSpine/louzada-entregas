@@ -16,7 +16,7 @@ function clauseUpdates(clause: string): ContactUpdate | null {
   const address = clause.match(/\bendere[cç]o\s+(?:d[aeo]\s+)?(.+?)\s+(?:é|eh|\be\b)\s+(.+)$/i);
   const phone = clause.match(/\b(?:telefone|fone|celular)\s+(?:d[aeo]\s+)?(.+?)\s+(?:é|eh|\be\b)\s+(.+)$/i);
   const clientName = titleName((address?.[1] ?? phone?.[1] ?? "").trim());
-  if (!clientName) return null;
+  if (!clientName || /^(entregador|motoboy|moto boy)\b/i.test(clientName)) return null;
   const street = address?.[2]?.trim().replace(/[.;]+$/, "") ?? "";
   const number = (phone?.[2] ?? "").replace(/[^\d\s/+()-]/g, " ").replace(/\s+/g, " ").trim();
   if (!street && number.length < 8) return null;

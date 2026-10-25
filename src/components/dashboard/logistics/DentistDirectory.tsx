@@ -13,10 +13,12 @@ import {
   registerSpokenClientAction,
   saveDentistAction,
   updateClientContactAction,
+  updateMotoboyPhoneAction,
 } from "@/app/actions/logistics";
 import { AgendaAudioRecorder } from "@/components/dashboard/AgendaAudioRecorder";
+import { CallLink } from "@/components/dashboard/logistics/CallLink";
 import { Button } from "@/components/ui/button";
-import type { SpokenClientDraft } from "@/server/services/logistics";
+import type { SpokenClientDraft, SpokenCourier } from "@/server/services/logistics";
 
 type Dentist = {
   id: string;
@@ -35,7 +37,7 @@ export function DentistDirectory({
   motoboys,
 }: {
   dentists: Dentist[];
-  motoboys: Array<{ id: string; name: string; active: boolean }>;
+  motoboys: Array<{ id: string; name: string; active: boolean; phone: string | null }>;
 }) {
   const router = useRouter();
   const [pending, startTransition] = useTransition();
@@ -43,7 +45,7 @@ export function DentistDirectory({
   const [error, setError] = useState<string | null>(null);
   const [notes, setNotes] = useState<string[]>([]);
   const [pendingClients, setPendingClients] = useState<SpokenClientDraft[]>([]);
-  const [pendingCouriers, setPendingCouriers] = useState<string[]>([]);
+  const [pendingCouriers, setPendingCouriers] = useState<SpokenCourier[]>([]);
   const [command, setCommand] = useState("");
   const [form, setForm] = useState({
     name: "",
@@ -54,6 +56,7 @@ export function DentistDirectory({
     aliases: "",
   });
   const [motoboyName, setMotoboyName] = useState("");
+  const [motoboyPhone, setMotoboyPhone] = useState("");
   const [query, setQuery] = useState("");
   const [courierQuery, setCourierQuery] = useState("");
   const [onlyMissing, setOnlyMissing] = useState(false);
@@ -80,7 +83,7 @@ export function DentistDirectory({
     ok: true;
     notes: string[];
     pendingClients: SpokenClientDraft[];
-    pendingCouriers: string[];
+    pendingCouriers: SpokenCourier[];
   }) {
     setNotes(result.notes);
     setPendingClients(result.pendingClients);
@@ -218,22 +221,25 @@ export function DentistDirectory({
             </div>
           );
         })}
-        {pendingCouriers.map((name) => (
-          <div key={name} className="mt-3 rounded-xl border border-warning/40 bg-warning/10 p-3">
-            <p className="text-sm">Não identifiquei o entregador {name}. Posso cadastrá-lo?</p>
+        {pendingCouriers.map((courier) => (
+          <div key={courier.name} className="mt-3 rounded-xl border border-warning/40 bg-warning/10 p-3">
+            <p className="text-sm">
+              Não identifiquei o entregador {courier.name}. Posso cadastrá-lo
+              {courier.phone ? ` com o telefone ${courier.phone}` : ""}?
+            </p>
             <div className="mt-2 flex gap-2">
               <Button
                 type="button"
                 disabled={pending}
                 onClick={() => {
                   startTransition(async () => {
-                    const result = await createMotoboyAction(name);
+                    const result = await createMotoboyAction(courier.name, courier.phone);
                     if (!result.ok) {
                       setError(result.error);
                       return;
                     }
-                    setPendingCouriers((current) => current.filter((item) => item !== name));
-                    setNotes([`${name} entrou no cadastro de entregadores.`]);
+                    setPendingCouriers((current) => current.filter((item) => item.name !== courier.name));
+                    setNotes([`${courier.name} entrou no cadastro de entregadores.`]);
                     setTab("entregadores");
                     router.refresh();
                   });
@@ -245,7 +251,7 @@ export function DentistDirectory({
                 type="button"
                 variant="outline"
                 disabled={pending}
-                onClick={() => setPendingCouriers((current) => current.filter((item) => item !== name))}
+                onClick={() => setPendingCouriers((current) => current.filter((item) => item.name !== courier.name))}
               >
                 Não, descartar o cadastro
               </Button>
@@ -313,68 +319,27 @@ export function DentistDirectory({
           ) : (
             <ol className="depth-well space-y-3">
               {visibleCouriers.map((motoboy) => (
-                <li key={motoboy.id} className="depth-card p-3">
-                  <p className="font-medium">
-                    {motoboys.indexOf(motoboy) + 1}. {motoboy.name}
-                    {motoboy.active ? "" : " · Inativo"}
-                  </p>
-                  <div className="mt-2 flex flex-wrap gap-2">
-                    <Button
-                      type="button"
-                      variant="outline"
-                      disabled={pending}
-                      onClick={() => {
-                        setError(null);
-                        startTransition(async () => {
-                          const result = await setMotoboyActiveAction(motoboy.id, !motoboy.active);
-                          if (!result.ok) {
-                            setError(result.error);
-                            return;
-                          }
-                          router.refresh();
-                        });
-                      }}
-                    >
-                      {motoboy.active ? "Inativar" : "Reativar"}
-                    </Button>
-                    <Button
-                      type="button"
-                      variant="outline"
-                      disabled={pending}
-                      onClick={() => {
-                        setError(null);
-                        startTransition(async () => {
-                          const result = await deleteMotoboyAction(motoboy.id);
-                          if (!result.ok) {
-                            setError(result.error);
-                            return;
-                          }
-                          router.refresh();
-                        });
-                      }}
-                    >
-                      Excluir
-                    </Button>
-                  </div>
-                </li>
+                <CourierCard key={motoboy.id} motoboy={motoboy} index={motoboys.indexOf(motoboy) + 1} />
               ))}
             </ol>
           )}
           <section className="depth-card p-4">
             <h2 className="font-medium">Novo entregador</h2>
-            <div className="mt-3 flex gap-2">
-              <input className="depth-field flex-1 px-2 py-1" placeholder="Nome" value={motoboyName} onChange={(event) => setMotoboyName(event.target.value)} />
+            <div className="mt-3 grid gap-2">
+              <input className="depth-field px-2 py-1" placeholder="Nome" value={motoboyName} onChange={(event) => setMotoboyName(event.target.value)} />
+              <input className="depth-field px-2 py-1" placeholder="Telefone" value={motoboyPhone} onChange={(event) => setMotoboyPhone(event.target.value)} />
               <Button
                 disabled={pending || !motoboyName.trim()}
                 onClick={() => {
                   setError(null);
                   startTransition(async () => {
-                    const result = await createMotoboyAction(motoboyName);
+                    const result = await createMotoboyAction(motoboyName, motoboyPhone);
                     if (!result.ok) {
                       setError(result.error);
                       return;
                     }
                     setMotoboyName("");
+                    setMotoboyPhone("");
                     router.refresh();
                   });
                 }}
@@ -403,6 +368,7 @@ function ClientContactCard({ dentist, index }: { dentist: Dentist; index: number
       <div className="mt-2 grid gap-2">
         <input className="depth-field px-2 py-1 text-sm" placeholder="Endereço" value={address} onChange={(event) => setAddress(event.target.value)} />
         <input className="depth-field px-2 py-1 text-sm" placeholder="Telefone" value={phone} onChange={(event) => setPhone(event.target.value)} />
+        {dentist.phone ? <CallLink phone={dentist.phone} who={dentist.name} /> : <p className="text-sm text-muted-foreground">Sem telefone para ligar</p>}
         <Button
           variant="outline"
           disabled={pending}
@@ -420,6 +386,89 @@ function ClientContactCard({ dentist, index }: { dentist: Dentist; index: number
         >
           Salvar endereço e telefone
         </Button>
+        {error ? <p className="text-sm text-destructive">{error}</p> : null}
+      </div>
+    </li>
+  );
+}
+
+function CourierCard({
+  motoboy,
+  index,
+}: {
+  motoboy: { id: string; name: string; active: boolean; phone: string | null };
+  index: number;
+}) {
+  const router = useRouter();
+  const [pending, startTransition] = useTransition();
+  const [error, setError] = useState<string | null>(null);
+  const [phone, setPhone] = useState(motoboy.phone ?? "");
+
+  return (
+    <li className="depth-card p-3">
+      <p className="font-medium">
+        {index}. {motoboy.name}
+        {motoboy.active ? "" : " · Inativo"}
+      </p>
+      <div className="mt-2 grid gap-2">
+        <input className="depth-field px-2 py-1 text-sm" placeholder="Telefone" value={phone} onChange={(event) => setPhone(event.target.value)} />
+        {motoboy.phone ? <CallLink phone={motoboy.phone} who={motoboy.name} /> : <p className="text-sm text-muted-foreground">Sem telefone para ligar</p>}
+        <div className="flex flex-wrap gap-2">
+          <Button
+            type="button"
+            variant="outline"
+            disabled={pending}
+            onClick={() => {
+              setError(null);
+              startTransition(async () => {
+                const result = await updateMotoboyPhoneAction(motoboy.id, phone);
+                if (!result.ok) {
+                  setError(result.error);
+                  return;
+                }
+                router.refresh();
+              });
+            }}
+          >
+            Salvar telefone
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            disabled={pending}
+            onClick={() => {
+              setError(null);
+              startTransition(async () => {
+                const result = await setMotoboyActiveAction(motoboy.id, !motoboy.active);
+                if (!result.ok) {
+                  setError(result.error);
+                  return;
+                }
+                router.refresh();
+              });
+            }}
+          >
+            {motoboy.active ? "Inativar" : "Reativar"}
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            disabled={pending}
+            onClick={() => {
+              setError(null);
+              startTransition(async () => {
+                const result = await deleteMotoboyAction(motoboy.id);
+                if (!result.ok) {
+                  setError(result.error);
+                  return;
+                }
+                router.refresh();
+              });
+            }}
+          >
+            Excluir
+          </Button>
+        </div>
         {error ? <p className="text-sm text-destructive">{error}</p> : null}
       </div>
     </li>

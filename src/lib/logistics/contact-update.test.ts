@@ -17,4 +17,8 @@ describe("atualização de endereço e telefone", () => {
   it("ignora frase sem endereço nem telefone", () => {
     assert.deepEqual(interpretContactUpdates("Amanhã coletar no doutor Rodrigo às cinco."), []);
   });
+
+  it("não transforma o telefone do entregador em cliente", () => {
+    assert.deepEqual(interpretContactUpdates("O telefone do entregador Paulo é 11 97777-6655."), []);
+  });
 });

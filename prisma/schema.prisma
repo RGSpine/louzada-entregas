@@ -492,6 +492,8 @@ model IntraUser {
   pinUpdatedAt DateTime? @map("pin_updated_at")
   /** PIN em claro, só para o administrador principal ver e alterar no próprio perfil. */
   pinCode     String?   @map("pin_code") @db.VarChar(4)
+  /** Telefone do entregador, para a ligação a partir do painel e dos registros. */
+  phone       String?   @map("phone") @db.VarChar(40)
   /** Hash do link de troca do PIN. Só o administrador principal usa. */
   pinResetTokenHash String?   @map("pin_reset_token_hash")
   pinResetExpiresAt DateTime? @map("pin_reset_expires_at")
