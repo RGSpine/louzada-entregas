@@ -1,10 +1,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  detectIosShell,
+  iosShellLabel,
   isAppleMobileDevice,
   isInAppBrowser,
   isAppleMobileSafari,
   needsSafariAuthHardening,
+  safariHandoffUrl,
 } from "./ios-browser";
 
 test("isAppleMobileDevice detecta iPhone/iPad", () => {
@@ -62,6 +65,41 @@ test("isAppleMobileSafari distingue Safari de CriOS", () => {
     ),
     false,
   );
+});
+
+const SAFARI =
+  "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1";
+
+test("detectIosShell separa Safari, Chrome, Google e WhatsApp", () => {
+  assert.equal(detectIosShell(SAFARI), "safari");
+  assert.equal(
+    detectIosShell(
+      "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/120.0.0.0 Mobile/15E148 Safari/604.1",
+    ),
+    "chrome",
+  );
+  assert.equal(
+    detectIosShell(
+      "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) GSA/300.0 Mobile/15E148 Safari/604.1",
+    ),
+    "google",
+  );
+  assert.equal(
+    detectIosShell(
+      "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 WhatsApp/10.0.0",
+    ),
+    "in-app",
+  );
+  assert.equal(detectIosShell("Mozilla/5.0 (Linux; Android 14) Chrome/120.0.0.0"), null);
+  assert.equal(iosShellLabel("google"), "Google");
+});
+
+test("safariHandoffUrl aponta a mesma página no Safari", () => {
+  assert.equal(
+    safariHandoffUrl("https://louzada.example/login?next=%2Fdashboard"),
+    "x-safari-https://louzada.example/login?next=%2Fdashboard",
+  );
+  assert.equal(safariHandoffUrl("notaurl"), null);
 });
 
 test("needsSafariAuthHardening cobre iPhone e in-app", () => {

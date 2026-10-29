@@ -1,10 +1,13 @@
 "use client";
 
 import Link from "next/link";
+import { useEffect, useState } from "react";
 import { usePathname } from "next/navigation";
 import { Download, Loader2, Smartphone, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import { currentIosShell, IosInstallSteps } from "@/components/pwa/IosInstallSteps";
+import type { IosShell } from "@/lib/auth/ios-browser";
 import {
   isPwaStandalone,
   pwaInstallTutorialHash,
@@ -15,13 +18,17 @@ import { usePwaInstall } from "@/components/pwa/PwaInstallProvider";
 export function PwaInstallBanner() {
   const pathname = usePathname();
   const ctx = usePwaInstall();
+  const platform = ctx?.platform ?? "unknown";
+  const [iosShell, setIosShell] = useState<IosShell | null>(null);
+  useEffect(() => {
+    if (platform === "ios") setIosShell(currentIosShell());
+  }, [platform]);
 
   if (!ctx?.visible) return null;
   if (isPwaStandalone()) return null;
   if (!shouldOfferPwaInstallOnPath(pathname)) return null;
 
   const {
-    platform,
     canNativePrompt,
     installing,
     localDevHint,
@@ -33,21 +40,24 @@ export function PwaInstallBanner() {
   const subtitle = canNativePrompt
     ? "Instalação nativa — um toque e pronto."
     : platform === "ios"
-      ? "Gravação otimizada em tela cheia, como um app."
+      ? "Toque nos três passos. O desenho do Louzada fica na tela."
       : "Acesso rápido na tela inicial ou na área de trabalho.";
 
   return (
     <div
       className={cn(
-        "pointer-events-none fixed inset-x-0 bottom-0 z-[90] flex justify-center p-3 sm:p-4",
-        "pb-[max(0.75rem,env(safe-area-inset-bottom))]",
+        "pointer-events-none fixed inset-x-0 z-[90] flex justify-center p-3 sm:p-4",
+        platform === "ios"
+          ? "top-0 max-h-[90vh] pt-[max(0.75rem,env(safe-area-inset-top))]"
+          : "bottom-0 pb-[max(0.75rem,env(safe-area-inset-bottom))]",
       )}
       role="region"
       aria-label="Instalar aplicativo Louzada Entregas"
     >
       <div
         className={cn(
-          "pointer-events-auto w-full max-w-xl overflow-hidden rounded-2xl border shadow-[var(--shadow-elevation-3)]",
+          "pointer-events-auto w-full max-w-xl overflow-y-auto rounded-2xl border shadow-[var(--shadow-elevation-3)]",
+          platform === "ios" && "max-h-[85vh]",
           "border-primary/30 bg-gradient-to-br from-card via-primary/10 to-muted",
           "dark:border-primary/40 dark:from-card dark:via-primary/15 dark:to-background",
         )}
@@ -67,11 +77,17 @@ export function PwaInstallBanner() {
           <div className="min-w-0 flex-1">
             <div className="flex items-start justify-between gap-2">
               <div>
-                <p className="flex items-center gap-1.5 text-sm font-semibold text-foreground">
-                  <Smartphone className="h-4 w-4 text-primary" aria-hidden />
-                  Instale o Louzada Entregas
+                <p className={cn(
+                  "flex items-center gap-1.5 font-semibold text-foreground",
+                  platform === "ios" ? "text-lg" : "text-sm",
+                )}>
+                  <Smartphone className="h-5 w-5 text-primary" aria-hidden />
+                  {platform === "ios" ? "Coloque o Louzada na tela" : "Instale o Louzada Entregas"}
                 </p>
-                <p className="mt-0.5 text-xs leading-snug text-muted-foreground">
+                <p className={cn(
+                  "mt-0.5 leading-snug text-muted-foreground",
+                  platform === "ios" ? "text-base" : "text-xs",
+                )}>
                   {subtitle}
                 </p>
                 {localDevHint ? (
@@ -87,13 +103,16 @@ export function PwaInstallBanner() {
               <button
                 type="button"
                 onClick={dismiss}
-                className="min-touch flex shrink-0 items-center justify-center rounded-lg p-1 text-muted-foreground hover:bg-muted/70 hover:text-foreground"
+                className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg text-muted-foreground hover:bg-muted/70 hover:text-foreground"
                 aria-label="Fechar aviso de instalação"
               >
-                <X className="h-4 w-4" />
+                <X className="h-6 w-6" />
               </button>
             </div>
 
+            {platform === "ios" ? <IosInstallSteps shell={iosShell} /> : null}
+
+            {platform === "ios" ? null : (
             <div className="mt-3 flex flex-wrap items-center gap-2">
               <Button
                 type="button"
@@ -121,6 +140,7 @@ export function PwaInstallBanner() {
                 </Button>
               ) : null}
             </div>
+            )}
           </div>
         </div>
       </div>

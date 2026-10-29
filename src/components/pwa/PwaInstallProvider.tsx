@@ -11,9 +11,8 @@ import {
 } from "react";
 import {
   detectPwaInstallPlatform,
-  dismissInstallBanner,
+  clearInstallBannerDismiss,
   isAndroidDevice,
-  isInstallBannerDismissed,
   isIOSDevice,
   isLocalDevHost,
   isPwaInstallSupportedEnvironment,
@@ -63,6 +62,7 @@ export function PwaInstallProvider({ children }: { children: ReactNode }) {
   const installEnvOk = isPwaInstallSupportedEnvironment();
 
   useEffect(() => {
+    clearInstallBannerDismiss();
     setPlatform(detectPwaInstallPlatform());
     setLocalDevHint(isLocalDevHost());
     setReady(true);
@@ -70,7 +70,7 @@ export function PwaInstallProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     if (!ready || !installEnvOk) return;
-    if (isPwaStandalone() || isInstallBannerDismissed()) return;
+    if (isPwaStandalone()) return;
 
     const onBeforeInstall = (event: BeforeInstallPromptEvent) => {
       event.preventDefault();
@@ -84,28 +84,23 @@ export function PwaInstallProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     if (!ready || !installEnvOk) return;
-    if (isPwaStandalone() || isInstallBannerDismissed()) return;
+    if (isPwaStandalone()) return;
     if (deferredPrompt) return;
 
     if (isIOSDevice()) {
-      const timer = window.setTimeout(() => setVisible(true), 1200);
+      const timer = window.setTimeout(() => setVisible(true), 0);
       return () => window.clearTimeout(timer);
     }
 
     if (isAndroidDevice()) {
       const timer = window.setTimeout(() => {
-        if (!isPwaStandalone() && !isInstallBannerDismissed()) {
-          setVisible(true);
-        }
+        if (!isPwaStandalone()) setVisible(true);
       }, 2500);
       return () => window.clearTimeout(timer);
     }
 
-    // Desktop: só após critérios PWA (SW + manifest) — evita banner inútil no dev.
     const timer = window.setTimeout(() => {
-      if (!isPwaStandalone() && !isInstallBannerDismissed()) {
-        setVisible(true);
-      }
+      if (!isPwaStandalone()) setVisible(true);
     }, 3000);
     return () => window.clearTimeout(timer);
   }, [ready, installEnvOk, deferredPrompt]);
@@ -121,7 +116,6 @@ export function PwaInstallProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const dismiss = useCallback(() => {
-    dismissInstallBanner();
     setVisible(false);
     setGuideKind(null);
   }, []);

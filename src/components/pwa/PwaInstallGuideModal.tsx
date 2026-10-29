@@ -4,6 +4,8 @@ import Link from "next/link";
 import { Monitor, Share, Smartphone, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ClinicalCalmModal } from "@/components/ui/ClinicalCalmModal";
+import { IosSafariHandoff } from "@/components/pwa/IosInstallSteps";
+import { detectIosShell } from "@/lib/auth/ios-browser";
 import { pwaInstallTutorialHash, type PwaInstallPlatform } from "@/lib/pwa-install";
 
 export type PwaInstallGuideKind = "ios" | "android" | "desktop";
@@ -14,12 +16,12 @@ const GUIDE_COPY: Record<
 > = {
   ios: {
     title: "Instalar no iPhone",
-    subtitle: "O Safari não permite instalação automática — são 3 toques:",
+    subtitle: "Faça os três toques. O desenho do Louzada fica na tela do iPhone.",
     hashPlatform: "ios",
     steps: [
-      "Toque em Compartilhar na barra inferior do Safari.",
-      "Escolha Adicionar à Tela de Início.",
-      "Confirme em Adicionar e abra sempre pelo ícone na tela inicial.",
+      "Olhe a barra de baixo. Toque no quadrado com a seta para cima. O nome dele é Compartilhar.",
+      "Desça a lista com o dedo. Toque em Adicionar à Tela de Início.",
+      "Toque em Adicionar. O desenho do Louzada aparece na tela do iPhone. Abra sempre por esse desenho.",
     ],
   },
   android: {
@@ -59,6 +61,7 @@ export function PwaInstallGuideModal({
 
   const copy = GUIDE_COPY[kind];
   const Icon = kind === "desktop" ? Monitor : kind === "ios" ? Share : Smartphone;
+  const iosShell = kind === "ios" ? detectIosShell() : null;
 
   return (
     <ClinicalCalmModal
@@ -100,6 +103,12 @@ export function PwaInstallGuideModal({
           </code>
           .
         </p>
+      ) : null}
+
+      {iosShell && iosShell !== "safari" ? (
+        <div className="mb-3">
+          <IosSafariHandoff />
+        </div>
       ) : null}
 
       <ol className="space-y-3 text-sm text-foreground/90">

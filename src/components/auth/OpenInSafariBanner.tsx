@@ -2,10 +2,12 @@
 
 import { useEffect, useState } from "react";
 import { ExternalLink } from "lucide-react";
+import { IosSafariHandoff } from "@/components/pwa/IosInstallSteps";
 import {
+  detectIosShell,
   isInAppBrowser,
-  needsSafariAuthHardening,
   openInSafariHintMessage,
+  type IosShell,
 } from "@/lib/auth/ios-browser";
 import { cn } from "@/lib/utils";
 
@@ -21,11 +23,13 @@ type Props = {
 export function OpenInSafariBanner({ className, onlyInApp = false }: Props) {
   const [visible, setVisible] = useState(false);
   const [message, setMessage] = useState("");
+  const [shell, setShell] = useState<IosShell | null>(null);
 
   useEffect(() => {
-    const show = onlyInApp ? isInAppBrowser() : needsSafariAuthHardening();
-    if (!show) return;
-    if (onlyInApp && !isInAppBrowser()) return;
+    const detected = detectIosShell();
+    const show = onlyInApp ? isInAppBrowser() : detected != null && detected !== "safari";
+    if (!show || !detected || detected === "safari") return;
+    setShell(detected);
     setMessage(openInSafariHintMessage());
     setVisible(true);
   }, [onlyInApp]);
@@ -44,11 +48,10 @@ export function OpenInSafariBanner({ className, onlyInApp = false }: Props) {
         <ExternalLink className="mt-0.5 h-4 w-4 shrink-0 text-warning" aria-hidden />
         <span>{message}</span>
       </p>
-      {isInAppBrowser() ? (
-        <p className="mt-2 text-xs text-muted-foreground">
-          No Safari, abra <strong>aievolui.com.br</strong> e faça login de novo antes de
-          escolher o plano.
-        </p>
+      {shell ? (
+        <div className="mt-2">
+          <IosSafariHandoff />
+        </div>
       ) : null}
     </div>
   );

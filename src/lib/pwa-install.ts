@@ -1,7 +1,6 @@
 /** Detecção e persistência do prompt de instalação PWA. */
 
 export const PWA_INSTALL_DISMISS_KEY = "aievolui-pwa-install-dismissed-at";
-const DISMISS_MS = 14 * 24 * 60 * 60 * 1000;
 
 export type PwaInstallPlatform = "android" | "ios" | "desktop" | "unknown";
 
@@ -49,25 +48,13 @@ export function detectPwaInstallPlatform(): PwaInstallPlatform {
   return "unknown";
 }
 
+/** Fechar o aviso vale só nesta visita. A próxima abertura mostra de novo, na hora. */
 export function isInstallBannerDismissed(): boolean {
-  if (typeof localStorage === "undefined") return false;
-  try {
-    const raw = localStorage.getItem(PWA_INSTALL_DISMISS_KEY);
-    if (!raw) return false;
-    const ts = Number.parseInt(raw, 10);
-    if (!Number.isFinite(ts)) return false;
-    return Date.now() - ts < DISMISS_MS;
-  } catch {
-    return false;
-  }
+  return false;
 }
 
 export function dismissInstallBanner(): void {
-  try {
-    localStorage.setItem(PWA_INSTALL_DISMISS_KEY, String(Date.now()));
-  } catch {
-    /* ignore */
-  }
+  clearInstallBannerDismiss();
 }
 
 export function clearInstallBannerDismiss(): void {

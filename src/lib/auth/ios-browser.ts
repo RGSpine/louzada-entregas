@@ -45,6 +45,51 @@ export function isInAppBrowser(ua?: string | null): boolean {
   return false;
 }
 
+/** Onde o iPhone abriu a página. A instalação na tela inicial só existe no Safari. */
+export type IosShell = "safari" | "chrome" | "google" | "firefox" | "edge" | "in-app" | "other";
+
+export function detectIosShell(ua?: string | null): IosShell | null {
+  if (!isAppleMobileDevice(ua)) return null;
+  const s = getBrowserUserAgent(ua);
+  if (/GSA\//i.test(s)) return "google";
+  if (/CriOS/i.test(s)) return "chrome";
+  if (/FxiOS/i.test(s)) return "firefox";
+  if (/EdgiOS/i.test(s)) return "edge";
+  if (isInAppBrowser(s)) return "in-app";
+  if (/Version\/[\d.]+/i.test(s) && /Safari/i.test(s)) return "safari";
+  return "other";
+}
+
+export function iosShellLabel(shell: IosShell): string {
+  switch (shell) {
+    case "safari":
+      return "Safari";
+    case "chrome":
+      return "Chrome";
+    case "google":
+      return "Google";
+    case "firefox":
+      return "Firefox";
+    case "edge":
+      return "Edge";
+    case "in-app":
+      return "navegador do aplicativo";
+    default:
+      return "este navegador";
+  }
+}
+
+/** Abre a mesma página no Safari. O iPhone aceita esse endereço a partir do Chrome, do Google e de outros apps. */
+export function safariHandoffUrl(href: string): string | null {
+  try {
+    const url = new URL(href);
+    if (url.protocol !== "https:" && url.protocol !== "http:") return null;
+    return `x-safari-${url.protocol}//${url.host}${url.pathname}${url.search}${url.hash}`;
+  } catch {
+    return null;
+  }
+}
+
 /** Safari iOS (não Chrome/Firefox/Edge no iPhone). */
 export function isAppleMobileSafari(ua?: string | null): boolean {
   const s = getBrowserUserAgent(ua);
@@ -61,9 +106,10 @@ export function needsSafariAuthHardening(ua?: string | null): boolean {
   return isInAppBrowser(ua) || isAppleMobileSafari(ua) || isAppleMobileDevice(ua);
 }
 
-export function openInSafariHintMessage(): string {
-  if (isInAppBrowser()) {
-    return "Você está no navegador do app (WhatsApp/Instagram). Toque em ⋯ ou Compartilhar → Abrir no Safari para concluir o cadastro e o pagamento.";
+export function openInSafariHintMessage(ua?: string | null): string {
+  const shell = detectIosShell(ua);
+  if (shell && shell !== "safari") {
+    return `Você abriu pelo ${iosShellLabel(shell)}. O iPhone só coloca o Louzada na tela inicial pelo Safari. Toque em Abrir no Safari e siga os três passos.`;
   }
-  return "No iPhone, use o Safari (não o navegador dentro de outros apps) para login e pagamento funcionarem sem erro.";
+  return "No iPhone, use o Safari para colocar o Louzada na tela inicial.";
 }
